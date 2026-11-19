@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""Test suite for Plan Impress.
+
+    make test            # or: python3 tests/run_tests.py
+
+Needs a development office running (``dev/start_ui.sh``); the integration tests
+load documents in UI mode because moving slides and dispatching commands both
+require a controller.  Tests that need the extension to be installed are
+skipped with a notice when it is not.
+
+Exit status is non-zero when something failed.
+"""
+
+import os
+import sys
+import time
+import traceback
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "dev"))
+sys.path.insert(0, os.path.join(ROOT, "src"))
+
+import lo  # noqa: E402  (also puts pyuno on sys.path)
+
+from plan_impress import config, core  # noqa: E402
+
+FIXTURE = os.path.join(HERE, "fixtures", "sections.odp")
+SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
+
+RESULTS = []
+
+
+def test(function):
+    """Collector decorator, so the file stays dependency free."""
+    RESULTS.append((function.__name__, function))
+    return function
+
+
+class Skip(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------- #
+# settings
+# --------------------------------------------------------------------------- #
+
+@test
+def colour_helpers():
+    assert config.color_to_hex(0xB0B0B0) == "B0B0B0"
+    assert config.hex_to_color("b0b0b0") == 0xB0B0B0
+    assert config.hex_to_color("#FFF") == 0x000FFF
+    assert config.hex_to_color("nonsense", 12) == 12
+    assert config._as_color("#336699", 0) == 0x336699
+    assert config._as_color(True, 7) == 7
+    assert config._as_color(None, 7) == 7
+
+
+@test
+def settings_roundtrip(tmp_path=os.path.join(ROOT, "out", "profile-test")):
+    os.makedirs(tmp_path, exist_ok=True)
+    fake_ctx = FakeContext(tmp_path)
+    settings = config.load(fake_ctx)
+    assert settings["muted_color"] == config.DEFAULT_MUTED_COLOR, settings
+    settings["muted_color"] = 0x123456
+    settings["title"] = "Outline"
+    config.save(fake_ctx, settings)
+    again = config.load(fake_ctx)
+    assert again["muted_color"] == 0x123456, again
+    assert again["title"] == "Outline", again
+    # a corrupt file must not break anything
+    with open(config.settings_path(fake_ctx), "w") as handle:
+        handle.write("{ not json")
+    assert config.load(fake_ctx)["muted_color"] == config.DEFAULT_MUTED_COLOR
+
+
+class FakeContext(object):
+    """Just enough component context for config._profile_dir."""
+
+    def __init__(self, folder):
+        self.folder = folder
+
+    class _Manager(object):
+        def __init__(self, folder):
+            self.folder = folder
+
+        def createInstanceWithContext(self, name, ctx):
+            folder = self.folder
+
+            class _Sub(object):
+                def getSubstitutedValue(self, key):
+                    return "file://" + folder
+            return _Sub()
+
+    @property
+    def ServiceManager(self):
+        return self._Manager(self.folder)
+
+
+# --------------------------------------------------------------------------- #
+# dialog model (no peer, so it works without a window manager)
+# --------------------------------------------------------------------------- #
+
+@test
+def dialog_field_specs():
+    from plan_impress import dialog
+    values = {"MutedColor": "B0B0B0", "TextColor": "000000",
+              "Title": "Plan", "master": "Default"}
+    specs = dialog._field_specs(values, ["Default", "Dark"])
+    names = [name for name, _service, _props in specs]
+    for expected in ("labelMutedColor", "MutedColor", "swatchMutedColor",
+                     "TextColor", "swatchTextColor", "Title", "Master",
+                     "ok", "cancel"):
+        assert expected in names, (expected, names)
+    by_name = {name: (service, dict(props)) for name, service, props in specs}
+    assert by_name["MutedColor"][0].endswith("UnoControlEditModel")
+    assert by_name["MutedColor"][1]["Text"] == "B0B0B0"
+    assert by_name["Master"][0].endswith("UnoControlListBoxModel")
+    assert by_name["Master"][1]["StringItemList"] == ("Default", "Dark")
+    assert by_name["swatchMutedColor"][1]["BackgroundColor"] == 0xB0B0B0
+    assert by_name["swatchTextColor"][1]["BackgroundColor"] == 0x000000
+    # every control must sit inside the dialog
+    for name, _service, props in specs:
+        props = dict(props)
+        assert props["PositionX"] + props["Width"] <= dialog.DIALOG_WIDTH, name
+        assert props["PositionY"] + props["Height"] <= dialog.DIALOG_HEIGHT, name
+
+
+@test
+def dialog_build_and_read_back():
+    """Build the real control model, add a peer, and read the values back."""
+    from plan_impress import dialog
+    ctx = lo.connect()
+    settings = dict(config.DEFAULTS)
+    settings.update({"muted_color": 0x00FF00, "title": "Agenda", "master": "Master2"})
+    window = dialog.SettingsDialog(ctx, settings, ["Master1", "Master2"])
+    window.build()
+    try:
+        model = window.model
+        for name in ("MutedColor", "TextColor", "Title", "Master", "ok", "cancel"):
+            assert model.hasByName(name), name
+        assert model.getByName("MutedColor").getPropertyValue("Text") == "00FF00"
+        assert model.getByName("Title").getPropertyValue("Text") == "Agenda"
+        assert tuple(model.getByName("Master").getPropertyValue("StringItemList")) == \
+            ("Master1", "Master2")
+        assert window.warnings == [], window.warnings
+        # a native peer must attach without a visible window (Xvfb session)
+        window._peer()
+        window._preselect_master()
+        assert list(window.control("Master").getSelectedItems()) == ["Master2"], \
+            list(window.control("Master").getSelectedItems())
+        result = window.result()
+        assert result == {"muted_color": 0x00FF00, "text_color": 0x000000,
+                          "title": "Agenda", "master": "Master2"}, result
+        # typing an invalid colour must fall back to the stored one
+        window.control("TextColor").setText("zzzzzz")
+        assert window.result()["text_color"] == 0x000000
+        window.control("TextColor").setText("123456")
+        assert window.result()["text_color"] == 0x123456
+    finally:
+        window.dispose()
+
+
+# --------------------------------------------------------------------------- #
+# document model
+# --------------------------------------------------------------------------- #
+
+def _paragraph_colors(shape):
+    colors = []
+    enum = shape.createEnumeration()
+    while enum.hasMoreElements():
+        colors.append(enum.nextElement().CharColor)
+    return colors
+
+
+@test
+def insert_plan_layout():
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        before = core.page_names(doc)
+        settings = dict(config.DEFAULTS)
+        settings.update({"muted_color": 0x112233, "text_color": 0xEE0000,
+                         "title": "Plan"})
+        report = core.insert_plan(doc, settings, ctx)
+
+        names = core.page_names(doc)
+        assert names[0] == core.OVERVIEW_NAME, names
+        assert names[1] == "PlanImpress:Section=0", names
+        assert names[2] == "welcome", names
+        assert names.count(core.OVERVIEW_NAME) == 1
+        for index in range(3):
+            assert ("PlanImpress:Section=%d" % index) in names, names
+        # one plan slide per section, at the top of it
+        sections = core.get_sections(doc)
+        assert len(sections) == 3, sections
+        for index, section in enumerate(sections):
+            assert section["slides"][0] == "PlanImpress:Section=%d" % index, section
+            assert section["start"] == names.index(section["slides"][0]), section
+        # the overview is not part of any section
+        assert core.OVERVIEW_NAME not in [
+            name for section in sections for name in section["slides"]]
+        assert len(names) == len(before) + 4, (names, before)
+        assert report["inserted"] == 4, report
+
+        # colours: the current section is highlighted, the rest are muted
+        pages = doc.DrawPages
+        by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
+                   for i in range(pages.Count)}
+        for index in range(3):
+            page = by_name["PlanImpress:Section=%d" % index]
+            body = core._body_shape(page)
+            assert body is not None, "no body shape on section plan slide"
+            colors = _paragraph_colors(body)
+            assert len(colors) == 3, colors
+            assert colors[index] == 0xEE0000, (index, colors)
+            assert all(c == 0x112233 for i, c in enumerate(colors) if i != index), \
+                (index, colors)
+            title = core._title_shape(page)
+            assert title.getString() == "Plan", title.getString()
+
+        # the overview lists the sections too, nothing dimmed
+        overview = by_name[core.OVERVIEW_NAME]
+        colors = _paragraph_colors(core._body_shape(overview))
+        assert colors == [0xEE0000] * 3, colors
+    finally:
+        lo.close(doc)
+
+
+@test
+def insert_plan_is_idempotent():
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        settings = dict(config.DEFAULTS)
+        first = core.insert_plan(doc, settings, ctx)["slides"]
+        second = core.insert_plan(doc, settings, ctx)["slides"]
+        assert first == second, (first, second)
+        assert core.remove_plan(doc) == 4
+        assert core.page_names(doc) == [
+            "welcome", "agenda-notes", "overview-diagram", "data-model", "apis",
+            "live-demo", "questions"], core.page_names(doc)
+        # removing twice is harmless
+        assert core.remove_plan(doc) == 0
+    finally:
+        lo.close(doc)
+
+
+@test
+def insert_plan_without_sections():
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.new_doc(desk, hidden=False)
+    try:
+        try:
+            core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        except core.PlanError as error:
+            assert "section" in str(error).lower(), error
+        else:
+            raise AssertionError("expected a PlanError for a deck without sections")
+    finally:
+        lo.close(doc)
+
+
+@test
+def master_slide_is_used():
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        masters = doc.MasterPages
+        if masters.Count < 2:
+            # add a second master so the setting has something to pick
+            extra = masters.insertNewByIndex(masters.Count)
+            extra.Name = "PlanMaster"
+            extra.add(doc.createInstance("com.sun.star.drawing.RectangleShape"))
+        settings = dict(config.DEFAULTS)
+        settings["master"] = "PlanMaster"
+        core.insert_plan(doc, settings, ctx)
+        pages = doc.DrawPages
+        plan = [pages.getByIndex(i) for i in range(pages.Count)
+                if str(pages.getByIndex(i).Name).startswith(core.PLAN_PREFIX)]
+        assert plan, core.page_names(doc)
+        for page in plan:
+            assert page.MasterPage.Name == "PlanMaster", page.MasterPage.Name
+        settings["master"] = "DoesNotExist"
+        try:
+            core.insert_plan(doc, settings, ctx)
+        except core.PlanError as error:
+            assert "DoesNotExist" in str(error), error
+        else:
+            raise AssertionError("expected a PlanError for a missing master page")
+    finally:
+        lo.close(doc)
+
+
+# --------------------------------------------------------------------------- #
+# the installed extension: menu registration and the dispatch path
+# --------------------------------------------------------------------------- #
+
+IDENTIFIER = "org.devsys.planimpress"
+
+
+def _extension_installed(ctx):
+    """Is the extension installed in the development profile?"""
+    try:
+        provider = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.deployment.PackageInformationProvider", ctx)
+        if provider is not None and provider.getPackageInfo(IDENTIFIER):
+            return True
+    except Exception:
+        pass
+    cache = os.path.join(lo.PROFILE, "user", "uno_packages")
+    for root, _dirs, files in os.walk(cache):
+        if any(IDENTIFIER in name or "plan-impress" in name for name in files):
+            return True
+    return False
+
+
+def _flatten_config(value, out, depth=0):
+    """Collect every string in a configmgr subtree into ``out``.
+
+    Configuration access hands back a shifting mix of ``XNameAccess`` groups,
+    ``PropertyValue`` sequences and UNO structs, so walk all three shapes.
+    """
+    if depth > 14 or len(out) > 4000:
+        return
+    if isinstance(value, str):
+        out.append(value)
+        return
+    if isinstance(value, (bytes, bool, int, float)) or value is None:
+        return
+    try:  # a group: XNameAccess
+        names = list(value.getElementNames())
+    except Exception:
+        names = None
+    if names is not None:
+        for name in names:
+            out.append(name)
+            try:
+                _flatten_config(value.getByName(name), out, depth + 1)
+            except Exception:
+                pass
+        return
+    if hasattr(value, "Name") and hasattr(value, "Value"):  # PropertyValue
+        out.append(str(value.Name))
+        _flatten_config(value.Value, out, depth + 1)
+        return
+    try:  # sequence or struct
+        items = list(value)
+    except TypeError:
+        return
+    for item in items:
+        _flatten_config(item, out, depth + 1)
+
+
+@test
+def addons_registered():
+    ctx = lo.connect()
+    if not _extension_installed(ctx):
+        raise Skip("extension not installed (make install)")
+    provider = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.configuration.ConfigurationProvider", ctx)
+    view = provider.createInstanceWithArguments(
+        "com.sun.star.configuration.ConfigurationAccess",
+        (lo.pv("nodepath", "/org.openoffice.Office.Addons/AddonUI"),))
+    strings = []
+    _flatten_config(view, strings)
+    joined = "\n".join(strings)
+    for expected in (IDENTIFIER, ".uno:SlideShowMenu", "AddAfter", "AddPath",
+                     "com.sun.star.presentation.PresentationDocument",
+                     "service:org.devsys.planimpress.InsertPlan?insert",
+                     "service:org.devsys.planimpress.Settings?settings",
+                     "service:org.devsys.planimpress.RemovePlan?remove",
+                     "private:separator", "Plan", "icons/plan_16.png"):
+        assert expected in joined, "missing from Addons.xcu: %s" % expected
+
+
+@test
+def menu_dispatch_inserts_slides():
+    """The exact path a menu click takes: dispatch the service URL on the frame."""
+    ctx = lo.connect()
+    if not _extension_installed(ctx):
+        raise Skip("extension not installed (make install)")
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        before = core.page_names(doc)
+        lo.dispatch(doc, SERVICE)
+        # Job dispatch can queue the request, so give the office a moment.
+        lo.wait_until(lambda: len(core.page_names(doc)) != len(before))
+        names = core.page_names(doc)
+        assert len(names) == len(before) + 4, names
+        assert names[0] == core.OVERVIEW_NAME, names
+    finally:
+        lo.close(doc)
+
+
+@test
+def settings_job_saves():
+    """The Settings job writes the file the next insert_plan reads.
+
+    The dialog itself cannot be driven from here (it is modal), so this checks
+    the persistence half of the command.
+    """
+    ctx = lo.connect()
+    if not _extension_installed(ctx):
+        raise Skip("extension not installed (make install)")
+    path = config.settings_path(ctx)
+    backup = None
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as handle:
+            backup = handle.read()
+    try:
+        config.save(ctx, dict(config.DEFAULTS, muted_color=0xABCDEF,
+                              text_color=0x112233, title="Agenda"))
+        desk = lo.desktop(ctx)
+        doc = lo.open_doc(desk, FIXTURE, hidden=False)
+        try:
+            core.remove_plan(doc)
+            core.insert_plan(doc, config.load(ctx), ctx)
+            pages = doc.DrawPages
+            by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
+                       for i in range(pages.Count)}
+            body = core._body_shape(by_name["PlanImpress:Section=2"])
+            colors = _paragraph_colors(body)
+            # the saved colours are what ended up on the slide: the third
+            # section is the current one on this plan slide
+            assert colors[2] == 0x112233, colors
+            assert colors[:2] == [0xABCDEF, 0xABCDEF], colors
+            assert core._title_shape(by_name[core.OVERVIEW_NAME]).getString() == "Agenda"
+        finally:
+            lo.close(doc)
+    finally:
+        if backup is None:
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(backup)
+
+
+def main():
+    only = sys.argv[1] if len(sys.argv) > 1 else None
+    failed = skipped = 0
+    for name, function in RESULTS:
+        if only and only not in name:
+            continue
+        try:
+            function()
+        except Skip as reason:
+            skipped += 1
+            print("SKIP %-38s %s" % (name, reason))
+        except Exception as error:
+            failed += 1
+            print("FAIL %-38s %s" % (name, error))
+            traceback.print_exc()
+        else:
+            print("ok   %-38s" % name)
+    total = len([1 for name, _ in RESULTS if not only or only in name])
+    print("\n%d passed, %d failed, %d skipped (of %d)"
+          % (total - failed - skipped, failed, skipped, total))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

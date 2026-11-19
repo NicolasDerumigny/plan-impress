@@ -1,0 +1,14 @@
+# build output
+out/
+*.oxt
+
+# the isolated development profile created by dev/start_ui.sh
+loprofile/
+
+# python
+__pycache__/
+*.py[cod]
+
+# editors / OS
+*.swp
+.DS_Store

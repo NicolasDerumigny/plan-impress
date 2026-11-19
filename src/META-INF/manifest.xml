@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest:manifest xmlns:manifest="http://openoffice.org/2001/manifest">
+    <!-- The menu contribution. -->
+    <manifest:file-entry manifest:full-path="Addons.xcu"
+                         manifest:media-type="application/vnd.sun.star.configuration-data"/>
+    <!-- The com.sun.star.task.Job implementations the menu items dispatch to.
+         Only handler.py is registered as a component: the plan_impress package
+         next to it is imported normally (handler.py puts its own folder on
+         sys.path), which keeps the plain modules out of the registration step. -->
+    <manifest:file-entry manifest:full-path="handler.py"
+                         manifest:media-type="application/vnd.sun.star.uno-component;type=Python"/>
+</manifest:manifest>

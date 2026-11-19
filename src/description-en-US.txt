@@ -1,0 +1,13 @@
+Plan Impress adds a "Plan" menu to LibreOffice Impress.
+
+* Insert Plan Slides puts one overview slide in front of the first section and
+  one plan slide at the top of every section. Each plan slide lists all the
+  sections of the presentation; only the current section is drawn in the text
+  colour, the others use the muted colour.
+* Settings... picks the muted colour, the highlight colour, the heading of the
+  generated slides and the master slide they are based on.
+* Remove Plan Slides takes them all out again.
+
+Plan slides are named "PlanImpress:...", which is how the extension recognises
+its own output: running the command again regenerates them instead of adding
+duplicates. Settings are stored per user profile, so they survive updates.

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<description xmlns="http://openoffice.org/extensions/description/2006"
+             xmlns:d="http://openoffice.org/extensions/description/2006"
+             xmlns:lo="http://libreoffice.org/extensions/description/2011"
+             xmlns:xlink="http://www.w3.org/1999/xlink">
+    <version value="1.0.0"/>
+    <identifier value="org.devsys.planimpress"/>
+    <display-name>
+        <name lang="en-US">Plan Impress</name>
+        <name lang="fr">Plan Impress</name>
+    </display-name>
+    <publisher>
+        <name lang="en-US" xlink:href="https://devsys.org">devsys</name>
+    </publisher>
+    <extension-description>
+        <src lang="en-US" xlink:href="description-en-US.txt"/>
+        <src lang="fr" xlink:href="description-fr.txt"/>
+    </extension-description>
+    <!--
+      The dependency element has to be in the LibreOffice namespace
+      (http://libreoffice.org/extensions/description/2011): see
+      desktop/source/deployment/misc/dp_dependencies.cxx.  An element in the
+      2006 namespace is not recognised and makes the installation fail with
+      "unsatisfied dependencies" whatever value it carries.  Plain
+      OpenOffice.org-minimal-version is compared against ReferenceOOoMajorMinor
+      (4.1 in program/versionrc), so asking for "7.0" there fails too.
+      dev/dep_probe.py reproduces every one of these spellings.
+    -->
+    <dependencies>
+        <lo:LibreOffice-minimal-version value="7.0" d:name="LibreOffice 7.0"/>
+    </dependencies>
+</description>
