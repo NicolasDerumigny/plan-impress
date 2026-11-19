@@ -57,6 +57,32 @@ def colour_helpers():
 
 
 @test
+def point_size_conversion():
+    """The pt <-> 1/100 mm conversion, without needing an office.
+
+    Getting this factor wrong is invisible to every other assertion: a plan
+    slide once rendered with a 260 pt heading and still passed the layout test.
+    """
+    assert abs(core._UNITS_PER_POINT - 35.28) < 0.1, core._UNITS_PER_POINT
+    # 100 mm of box for three lines leaves far more than 18 pt: keep the size
+    assert core._fit_point_size(18.0, 10000, 3) == 18.0
+    # 10 mm for three lines does not: clamp to the readable floor
+    assert core._fit_point_size(18.0, 1000, 3) == 10.0
+    # a long list in a normal box has to shrink
+    assert core._fit_point_size(32.0, 9134, 30) < 12.0
+    assert core._fit_point_size(18.0, 10000, 0) == 18.0
+
+    class Placeholder(object):
+        def __init__(self, height):
+            self.CharHeight = height
+
+    assert core._master_char_height(Placeholder(44.0), 32.0) == 44.0
+    for nonsense in (0, -1, 400, None, "large"):
+        assert core._master_char_height(Placeholder(nonsense), 32.0) == 32.0, nonsense
+    assert core._master_char_height(None, 18.0) == 18.0
+
+
+@test
 def settings_roundtrip(tmp_path=os.path.join(ROOT, "out", "profile-test")):
     os.makedirs(tmp_path, exist_ok=True)
     fake_ctx = FakeContext(tmp_path)
@@ -224,6 +250,44 @@ def insert_plan_layout():
         overview = by_name[core.OVERVIEW_NAME]
         colors = _paragraph_colors(core._body_shape(overview))
         assert colors == [0xEE0000] * 3, colors
+    finally:
+        lo.close(doc)
+
+
+@test
+def plan_slide_typography():
+    """Readable sizes, with nothing drawn off the slide.
+
+    ``CharHeight`` is a point size while all the geometry properties are
+    1/100 mm; mixing the two up once produced a 260 pt heading, and no colour
+    or ordering assertion noticed.  The master's own placeholder rectangles are
+    reused where they fit, so this also guards the fallback logic.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        pages = doc.DrawPages
+        checked = 0
+        for index in range(pages.Count):
+            page = pages.getByIndex(index)
+            if not str(page.Name).startswith(core.PLAN_PREFIX):
+                continue
+            checked += 1
+            title, body = core._title_shape(page), core._body_shape(page)
+            assert title is not None and body is not None, page.Name
+            assert 12.0 <= title.CharHeight <= 80.0, (page.Name, title.CharHeight)
+            assert 10.0 <= body.CharHeight <= 60.0, (page.Name, body.CharHeight)
+            assert title.CharHeight > body.CharHeight, page.Name
+            assert body.Position.Y >= title.Position.Y, page.Name
+            for shape in (title, body):
+                where = (page.Name, shape.ShapeType, shape.Position, shape.Size)
+                assert shape.Position.X >= 0 and shape.Position.Y >= 0, where
+                assert shape.Size.Width > 0 and shape.Size.Height > 0, where
+                assert (shape.Position.X + shape.Size.Width) <= page.Width * 1.02, where
+                assert (shape.Position.Y + shape.Size.Height) <= page.Height * 1.02, where
+        assert checked == 4, checked
     finally:
         lo.close(doc)
 

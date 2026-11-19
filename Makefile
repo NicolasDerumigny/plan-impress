@@ -46,6 +46,7 @@ test: install
 # Fast loop for the pure-Python part (no office needed).
 unit:
 	$(PY) tests/run_tests.py colour
+	$(PY) tests/run_tests.py point_size
 	$(PY) tests/run_tests.py dialog_field
 
 icons:

@@ -312,16 +312,63 @@ def _body_shape(page):
         return candidates[0]
 
 
-def _geometry(shape, fallback_pos, fallback_size):
-    """Reuse a master placeholder's rectangle so plan slides match the deck."""
+def _rect(shape, fallback_pos, fallback_size, page_width, page_height):
+    """Reuse a master placeholder's rectangle so plan slides match the deck.
+
+    The rectangle is only taken when it actually fits on the page: the default
+    Impress master keeps its title placeholder partly *off* the slide (y = -32 mm)
+    and two thirds of the page tall, and copying that verbatim renders the
+    heading outside the slide, so in that case the computed fallback is used
+    instead of a clipped version of it.
+    """
+    x, y = fallback_pos[0], fallback_pos[1]
+    width, height = fallback_size[0], fallback_size[1]
     if shape is not None:
         try:
-            return (shape.Position.X, shape.Position.Y,
-                    shape.Size.Width, shape.Size.Height)
+            px, py = int(shape.Position.X), int(shape.Position.Y)
+            pw, ph = int(shape.Size.Width), int(shape.Size.Height)
+            if px >= 0 and py >= 0 and px + pw <= page_width and py + ph <= page_height:
+                x, y, width, height = px, py, pw, ph
         except Exception:
             pass
-    return fallback_pos[0], fallback_pos[1], fallback_size[0], fallback_size[1]
+    return int(x), int(y), int(width), int(height)
 
+
+#: Space between baselines, as a multiple of the character height.
+_LINE_SPACING = 1.35
+#: Fallback character heights, used when the master placeholder does not give a
+#: usable one.  ``CharHeight`` is a **point** size; the geometry properties are
+#: 1/100 mm, so the two must never be mixed (deriving the size from the page
+#: height produced a 260 pt heading).
+_TITLE_PT = 32.0
+_BODY_PT = 18.0
+#: 1 pt in the 1/100 mm units the drawing API uses (1 pt = 0.3527 mm).
+_UNITS_PER_POINT = 35.2778
+
+
+def _master_char_height(shape, fallback):
+    """The point size a master placeholder asks for, when it says something sane."""
+    value = getattr(shape, "CharHeight", None) if shape is not None else None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return value if 6.0 < value < 100.0 else fallback
+
+
+def _fit_point_size(size, box_height, lines):
+    """Largest size not above ``size`` whose ``lines`` lines fit in ``box_height``."""
+    if lines < 1:
+        return size
+    per_line = (box_height / _UNITS_PER_POINT) / float(lines) / _LINE_SPACING
+    return max(10.0, min(size, per_line))
+
+
+#: Title placeholder services, best first.
+TITLE_SERVICES = (
+    "com.sun.star.presentation.TitleTextShape",
+    "com.sun.star.drawing.TextShape",
+)
 
 #: Body placeholder services, best first.  ``com.sun.star.presentation.
 #: SubtitleTextShape`` is *not* registered in LibreOffice 26.x, so the list
@@ -359,6 +406,14 @@ def _make_text_shape(doc, page, services, text, x, y, width, height,
         shape.CharHeight = float(char_height)
     except Exception:
         pass
+    # Presentation placeholders anchor their text in the middle of the box by
+    # default, which would float a one-line heading into the body area.
+    for name, value in (("TextAnchor", 0),        # com.sun.star.awt.TextAnchor.TOP
+                        ("TextAnchorKind", 1)):   # ...drawing.TextAnchorKind.TOP
+        try:
+            shape.setPropertyValue(name, value)
+        except Exception:
+            pass
     if bold:
         try:
             shape.CharWeight = _FONT_BOLD
@@ -396,31 +451,42 @@ def build_plan_slide(doc, page, section_names, current, settings):
     """Fill ``page`` with the heading plus every section name.
 
     ``current`` is the index of the highlighted section, or ``None`` for the
-    overview slide, where all names are drawn in the normal colour.
+    overview slide, where all names are drawn in the highlight colour.
+
+    Position and size come from the master's own placeholders where they are
+    usable, and the body is additionally sized so the whole list fits between
+    the heading and the bottom of the slide.
     """
     master = _master_page(doc, settings.get("master", ""))
     page.MasterPage = master
     _clear_page(page)
 
+    if not section_names:
+        raise PlanError("There are no sections to list.")
+
     width, height = page.Width, page.Height
     highlight = settings["text_color"]
     muted = settings["muted_color"]
 
-    tx, ty, tw, th = _geometry(
-        _title_shape(master), (width * 0.08, height * 0.06),
-        (width * 0.84, height * 0.14))
-    _make_text_shape(doc, page, ("com.sun.star.presentation.TitleTextShape",
-                                 "com.sun.star.drawing.TextShape"),
-                     settings.get("title") or "Plan",
-                     tx, ty, tw, th, char_height=max(18.0, height / 60.0), bold=True)
+    master_title = _title_shape(master)
+    tx, ty, tw, th = _rect(master_title, (width * 0.08, height * 0.05),
+                           (width * 0.84, height * 0.16), width, height)
+    title_pt = _master_char_height(master_title, _TITLE_PT)
+    _make_text_shape(doc, page, TITLE_SERVICES, settings.get("title") or "Plan",
+                     tx, ty, tw, th, char_height=title_pt, bold=True)
 
-    if not section_names:
-        raise PlanError("There are no sections to list.")
-    bx, by, bw, bh = _geometry(
-        _body_shape(master), (width * 0.12, height * 0.26),
-        (width * 0.76, height * 0.62))
+    master_body = _body_shape(master)
+    bx, by, bw, bh = _rect(master_body, (width * 0.10, height * 0.24),
+                           (width * 0.80, height * 0.66), width, height)
+    # the list has to start below the heading, whatever box the master suggests
+    below_heading = ty + int(title_pt * _UNITS_PER_POINT * _LINE_SPACING)
+    if by < below_heading:
+        by = min(below_heading, int(height * 0.7))
+        bh = max(int(height * 0.2), height - by - int(height * 0.05))
+    body_pt = _fit_point_size(_master_char_height(master_body, _BODY_PT),
+                              bh, len(section_names))
     body = _make_text_shape(doc, page, BODY_SERVICES, "\n".join(section_names),
-                            bx, by, bw, bh, char_height=max(12.0, height / 100.0))
+                            bx, by, bw, bh, char_height=body_pt)
     if current is None:
         # the overview: nothing is "current", so nothing is dimmed
         colors = [highlight] * len(section_names)

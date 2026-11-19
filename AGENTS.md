@@ -163,54 +163,67 @@ reproducible with a script in `dev/`.
     placeholder's type is `...SubtitleTextShape`, which also contains "Title".
     Use `supportsService("com.sun.star.presentation.TitleTextShape")`
     (`core._is_title`).
-19. `CharHeight` is a point size. The placeholder geometry comes from the
-    master's own shapes (`_geometry`), and the size is taken from the master
-    placeholder too (`_master_char_height`), falling back to ~32 pt title /
-    ~18 pt body. A size derived from `page.Height` (1/100 mm) gives absurd
-    results — 157 pt — and the paragraphs then overflow the shape.
-20. Per-paragraph colour is set on the paragraphs of `createEnumeration()`
+19. **`CharHeight` is a point size; every geometry property is 1/100 mm.** Never
+    derive one from the other: the original `height / 100` formula produced a
+    262 pt heading (`dev/debug_sizes.py` prints the shape, paragraph and portion
+    values). `core._master_char_height()` takes the size from the master
+    placeholder (44 pt title / 32 pt body in the default master) and falls back
+    to `_TITLE_PT`/`_BODY_PT`; `_fit_point_size()` shrinks the list so all
+    sections still fit under the heading, and `_UNITS_PER_POINT` (35.28, not
+    3528) is the only place the conversion happens.
+20. **Do not copy a master placeholder's rectangle blindly.** The default
+    Impress master keeps its title placeholder at `y = -32 mm` about two thirds
+    of the page tall; used verbatim the heading is drawn outside the slide.
+    `core._rect()` takes the rectangle only when it fits on the page and
+    otherwise uses the computed fallback. Impress also re-snaps a presentation
+    placeholder to the master and auto-grows it, so the rectangle you set is not
+    always the one you read back — check the rendered result, not the property.
+21. Presentation placeholders **anchor their text in the middle of the box**, so
+    a one-line heading floats down into the body; `_make_text_shape` sets
+    `TextAnchor` (awt `TOP` = 0) and `TextAnchorKind` (drawing `TOP` = 1).
+22. Per-paragraph colour is set on the paragraphs of `createEnumeration()`
     (`_paint_paragraphs`), and a plain-text shape created with `setString()`
     treats `\n` as a paragraph break.
 
 ### AWT (`dialog.py`)
 
-21. `dialog.Model = model` **raises** (`UnknownPropertyException: ... property
+23. `dialog.Model = model` **raises** (`UnknownPropertyException: ... property
     is readonly`) — use `dialog.setModel(model)`.
-22. `XNameContainer.insertByName()` on a dialog model **rejects** a
+24. `XNameContainer.insertByName()` on a dialog model **rejects** a
     `sequence<PropertyValue>` that carries a `Servicename`
     (`IllegalArgumentException`). Create the control's own model service
     (`com.sun.star.awt.UnoControlEditModel`, `...ButtonModel`,
     `...ListBoxModel`, `...FixedTextModel`), set the properties on it, and insert
     that object. `dev/debug_dialog.py` demonstrates both failures.
-23. Sequence properties need explicit typing: `StringItemList` must be
+25. Sequence properties need explicit typing: `StringItemList` must be
     `uno.Any("[]string", tuple(...))`, `SelectedItems` `uno.Any("[]short", ...)`.
     `SelectedItems` is **0-based** on the model, and setting it before
     `createPeer()` is what preselects the current master slide.
     `getControl(name)` returns a proxy with a limited method set — `selectItem()`
     is a no-op and `getPropertyValue()` is missing; read/write style properties
     through `control.Model` / `dialog.Model.getByName(name)`.
-24. The dialog is built as `_field_specs(values, masters)` → `(name, model
+26. The dialog is built as `_field_specs(values, masters)` → `(name, model
     service, [(property, value)])` triples, deliberately separated from UNO
     object creation so `tests/run_tests.py` can assert the layout with no
     display. Every control must fit inside `DIALOG_WIDTH`/`DIALOG_HEIGHT`; the
     test enforces it.
-25. Message boxes: `Toolkit.createMessageBox(parent, type, buttons, text)` with
+27. Message boxes: `Toolkit.createMessageBox(parent, type, buttons, text)` with
     `MessageBoxType` `0|3|4` (message/warning/error) and `MessageBoxButtons`
     `1` (OK) or `5` (Yes/No); `execute()` returns `MessageBoxResults`
     (`6` = Yes). Always `dispose()` in a `finally`, and never let a reporting
     failure swallow the real error.
-26. `setTitle()` works on the dialog, `setPropertyValue("Title", …)` does not.
+28. `setTitle()` works on the dialog, `setPropertyValue("Title", …)` does not.
 
 ### Out-of-process test scripts
 
-27. A remote document proxy does **not** expose `getComponentContext()`, so
+29. A remote document proxy does **not** expose `getComponentContext()`, so
     `core`'s functions take an optional `ctx` argument (`insert_plan(doc,
     settings, ctx)`). Keep it optional — the in-process Job relies on the
     default — and pass the connected context from tests.
-28. Tests need a controller and a frame (moving slides and dispatching commands
+30. Tests need a controller and a frame (moving slides and dispatching commands
     both require one), so they load documents **non-hidden** against the UI-mode
     dev office. `lo.open_doc(..., hidden=False)` waits for the controller.
-29. The office logs to `out/soffice.log`. The extension's own logs are
+31. The office logs to `out/soffice.log`. The extension's own logs are
     `loprofile/user/planimpress/error.log` (always written) and `debug.log`
     (only with the `debug` marker file in that folder, or
     `PLAN_IMPRESS_DEBUG=1`); the *Toggle Debug Log* menu item flips it.
@@ -224,16 +237,27 @@ extension are skipped when it is not installed, so `make unit` is useful without
 packaging.
 
 The suite covers: settings round-trip and corrupt-file tolerance, colour
-helpers, dialog layout *and* a real control model with a native peer, the
-inserted layout (position of every plan slide, per-paragraph colours, the
-overview outside all sections), idempotency and clean removal, the master-slide
-setting, `Addons.xcu` registration read back through the configuration
-provider, and the `service:` URL dispatch path a menu click takes.
+helpers, the point/unit conversion, dialog layout *and* a real control model
+with a native peer, the inserted layout (position of every plan slide,
+per-paragraph colours, the overview outside all sections), readable font sizes
+with nothing drawn off the slide, idempotency and clean removal, the
+master-slide setting, `Addons.xcu` registration read back through the
+configuration provider, and the `service:` URL dispatch path a menu click takes.
 
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),
 and `remove_plan` must return to the original seven slides and be harmless when
 there is nothing to remove.
+
+### Looking at the result
+
+Assertions cannot tell you a slide looks right, and a font size that is wrong by
+a factor of ten passed every test once. To see the generated deck: export a
+document with the plan slides inserted to PDF
+(`storeToURL(..., FilterName=impress_pdf_Export)`) and rasterise it with
+`pdftoppm`/`montage`, then look at the images. `dev/debug_sizes.py` prints the
+`CharHeight` at shape/paragraph/portion level plus the rectangles, which is
+usually the faster way to spot a layout problem.
 
 ## If something is broken
 
