@@ -191,6 +191,44 @@ def dialog_field_specs():
 
 
 @test
+def dialog_text_is_readable_and_rows_are_not_cramped():
+    """Letters as big as the menu's, and clear space between the entries.
+
+    Both reports were made by looking at the dialog, and neither is visible to a
+    "is it laid out" assertion: with ``FontHeight`` 10 the labels measured 13 px of
+    ink where a Plan menu item measures 14 px, and the rows were 14 units apart for
+    12-unit-tall fields, so the next label began 2 units below the previous field.
+    The numbers here are the ones ``python3 dev/measure_text.py`` reads off a
+    screenshot of the dialog next to the open menu.
+    """
+    from plan_impress import dialog
+    values = {"MutedColor": "B0B0B0", "TextColor": "000000",
+              "Title": "Plan", "master": "Default"}
+    specs = dialog._field_specs(values, ["Default", "Dark"])
+    by_name = {name: dict(props) for name, _service, props in specs}
+    # everything that shows words sets its own size: without it a control falls
+    # back to the toolkit default, which is the small text that started this
+    for name in ("labelMutedColor", "labelTextColor", "labelTitle", "labelMaster",
+                 "MutedColor", "TextColor", "Title", "Master", "ok", "cancel"):
+        assert by_name[name].get("FontHeight", 0) >= 12, (name, by_name[name])
+    assert dialog._FONT >= 12, dialog._FONT
+    # rows must not touch: the gap between one field's bottom and the next one's top
+    fields = [by_name[name]["PositionY"]
+              for name in ("MutedColor", "TextColor", "Title", "Master")]
+    for above, below in zip(fields, fields[1:]):
+        gap = (below - above) - dialog._FIELD_H
+        assert gap >= 6, "rows %d and %d share %d units of space" % (above, below, gap)
+    # and a label must clear the field of the row above it too, or the whole block
+    # reads as one wall of text
+    order = ("MutedColor", "TextColor", "Title", "Master")
+    bottoms = [by_name[name]["PositionY"] + by_name[name]["Height"] for name in order]
+    labels = [by_name["label" + name]["PositionY"] for name in order]
+    for above, below in zip(bottoms, labels[1:]):
+        assert below - above >= 6, "label starts %d units under the field above" % (
+            below - above)
+
+
+@test
 def dialog_controls_are_laid_out_apart():
     """The peer geometry of the real dialog: distinct, non-zero, inside the window.
 

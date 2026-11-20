@@ -99,29 +99,30 @@ _ROWS = (
 # every control model, are in the AWT dialog coordinate system - not pixels and
 # not 1/100 mm.  One unit is about 2.5 px of peer geometry (``Width=140`` gives
 # a 354 wide window, ``dev/debug_dialog_windowsize.py``), which puts this form at
-# roughly 360 x 240 px, the same magnitude the shipped wizards use
+# roughly 450 x 370 px, the same magnitude the shipped wizards use
 # (``wizards/ui/PathSelection.py`` gives a label ``Height=8``).
-_MARGIN = 8
+_MARGIN = 10
 _LABEL_X = _MARGIN
-_LABEL_W = 62
-_FIELD_X = _LABEL_X + _LABEL_W + 2
-_FIELD_W = 42
-_SWATCH_X = _FIELD_X + _FIELD_W + 3
-_SWATCH_W = 18
+_LABEL_W = 80
+_FIELD_X = _LABEL_X + _LABEL_W + 4
+_FIELD_W = 46
+_SWATCH_X = _FIELD_X + _FIELD_W + 4
+_SWATCH_W = 22
 _FIRST_ROW_Y = 12
-_ROW_STEP = 14
-_LABEL_H = 8
-_FIELD_H = 12
-_BUTTON_W = 28
-_BUTTON_H = 14
-_BUTTON_GAP = 3
-_ROW_GAP = 6
+_ROW_GAP = 9                     # clear space between one row and the next
+_LABEL_H = 10
+_FIELD_H = 15
+_ROW_STEP = _FIELD_H + _ROW_GAP  # a row is its field plus the gap under it
+_LABEL_OFFSET = 2                # label sits slightly below the field's top
+_BUTTON_W = 34
+_BUTTON_H = 18
+_BUTTON_GAP = 4
 DIALOG_WIDTH = _SWATCH_X + _SWATCH_W + _MARGIN
 _BUTTON_Y = _FIRST_ROW_Y + len(_ROWS) * _ROW_STEP + _ROW_GAP
 DIALOG_HEIGHT = _BUTTON_Y + _BUTTON_H + _MARGIN
 _OK_X = DIALOG_WIDTH - 2 * _BUTTON_W - _BUTTON_GAP - _MARGIN
 _CANCEL_X = _OK_X + _BUTTON_W + _BUTTON_GAP
-_FONT = 10
+_FONT = 12
 _COLOUR_FIELDS = ("MutedColor", "TextColor")
 _POS = 1                     # com.sun.star.awt.PosSize.POS
 
@@ -148,7 +149,8 @@ def _field_specs(values, masters):
     for index, (name, label) in enumerate(_ROWS):
         y = _FIRST_ROW_Y + index * _ROW_STEP
         specs.append(("label" + name, _FIXED_TEXT, [
-            ("Label", label), ("PositionX", _LABEL_X), ("PositionY", y + 2),
+            ("Label", label), ("PositionX", _LABEL_X),
+            ("PositionY", y + _LABEL_OFFSET),
             ("Width", _LABEL_W), ("Height", _LABEL_H), ("FontHeight", _FONT),
         ]))
         if name == "Master":

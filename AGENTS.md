@@ -241,7 +241,7 @@ reproducible with a script in `dev/`.
     position only, as `dialog._centre()` does.
 28. Those coordinates are **AWT dialog units** — neither pixels nor 1/100 mm. One
     unit is about 2.5 px of peer geometry (measured 2.53 x 2.39 in
-    `dev/debug_dialog_units.py`), which puts the form at 143x96 units ≈ 360x240 px —
+    `dev/debug_dialog_units.py`), which puts the form at 176x145 units ≈ 445x367 px —
     the same magnitude as the wizards, which give a label `Height=8`.
 29. The two factories have different property sets: the container's own adds
     `PositionX/Y`, `Width`, `Height`, `Name`, `Tag`, `Step`, `TabIndex`,
@@ -341,6 +341,28 @@ reproducible with a script in `dev/`.
 43. `core.footer_source()` picks the first non-generated slide whose band prints
     something, or `None`; `insert_plan` looks it up once and passes the same slide
     to every `build_plan_slide`, so all plan slides agree with each other.
+44. **The dialog sets its own text size.** Control models take `FontHeight` in
+    points, and at the original 10 the labels measured 13 px of ink where a Plan
+    menu item measures 14 px — the report was "text on the setting pane is smaller
+    than the menu text". `dialog._FONT` is 12, which measures 17 px (12 px of caps
+    plus the mnemonic underline): the same face the menus use. `dev/measure_text.py`
+    screenshots the dialog and the open menu and prints both heights, because no
+    property assertion can see this.
+45. Rows are spaced by `_ROW_STEP = _FIELD_H + _ROW_GAP`, i.e. a row is its field
+    plus clear air under it. Spacing each row by a fixed 14 units for 12-unit fields
+    left the next label 2 units under the previous field, which is what "the entries
+    are too cramped" meant. Both are asserted in
+    `tests/run_tests.py dialog_text_is_readable_and_rows_are_not_cramped`.
+46. Nothing on a control peer tells you what font it renders: `FontDescriptor`,
+    `FontName` and `FontHeight` are all absent from the peer proxy
+    (`dev/debug_font.py` prints `<none>` for every one). Judge text size from
+    pixels — `dev/measure_text.py` counts the bright rows of a screenshot (this theme
+    is dark, so text is the *light* pixels: thresholding for dark pixels measures the
+    background and reports every row as text).
+47. When you check that a test fails without the fix by editing `src/` and putting it
+    back: if the edit and the restore land in the same second and the file ends up the
+    same size, the `.pyc` keeps the mutated bytecode and the "restored" run still
+    fails. Remove `__pycache__` (or `make clean`) before trusting such a run.
 
 ### The template's own look (`core.py`)
 
