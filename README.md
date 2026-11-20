@@ -8,7 +8,9 @@ slides for the presentation's sections:
   with only the current section drawn in the text colour and all the others in
   the muted colour;
 * a **Settings…** dialog for the muted colour, the highlight colour, the title of
-  the plan slides and the master slide they are based on.
+  the plan slides and the master slide they are based on;
+* the deck's **footer** on all of them: the date, the footer text and the page
+  number a slide of the deck shows are shown by the generated slides too.
 
 ```
 before                              after
@@ -102,8 +104,8 @@ The flow of a menu click:
    find the active presentation, call into `core.py`.
 4. `core.insert_plan()` removes the previously generated slides, reads the
    sections, inserts the plan pages at the right positions, fills them with a
-   title shape and one paragraph per section, and rewrites the section list so
-   every plan slide leads its own section.
+   title shape and one paragraph per section, copies the deck's footer band onto
+   them, and rewrites the section list so every plan slide leads its own section.
 
 Only `handler.py` is registered as a UNO component; it puts its own folder on
 `sys.path` and imports the rest of the `plan_impress` package normally. That
@@ -123,6 +125,13 @@ failure would silently make the whole extension disappear from the menu.
 * **Inline, in the office process.** The commands run directly inside
   `trigger()`. Running them from a Python worker thread crashes the office (see
   `AGENTS.md`).
+* **The footer is copied from the deck, never invented.** Impress keeps the date,
+  the footer text and the page number on each *slide*, so a slide the extension
+  creates starts without them; `core.apply_footer()` copies them from the first
+  slide of the deck that actually prints something, and recreates that slide's
+  footer frames when the deck carries its own. A deck whose author switched the
+  footer on but typed nothing prints nothing, and the plan slides print nothing
+  there too: switched on is not the same as filled in.
 
 ## Development
 
@@ -137,7 +146,7 @@ make stop       # stop only that instance
 make test       # install, then run the test suite
 make unit       # the tests that need no office
 make icons      # regenerate src/icons/*.png
-make fixture    # regenerate tests/fixtures/sections.odp
+make fixture    # regenerate the fixture decks (with and without a footer)
 make clean
 
 python3 dev/open_fixture.py   # open the fixture in the dev office for a UI check
@@ -161,8 +170,9 @@ before the values are read back. Screenshots come last, because assertions have
 passed on a dialog nobody could use.
 
 Debugging helpers live in `dev/` (`debug_twice.py`, `debug_move.py`,
-`debug_dialog*.py`, `dep_probe.py`); each one reproduces one of the LibreOffice
-behaviours described in `AGENTS.md` and prints what it measured.
+`debug_dialog*.py`, `debug_footer*.py`, `dep_probe.py`, plus `render_plan.py` and
+`show_plan.py` for a look at the result); each one reproduces one of the
+LibreOffice behaviours described in `AGENTS.md` and prints what it measured.
 
 ## Documentation for agents
 

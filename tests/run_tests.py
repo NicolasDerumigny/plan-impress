@@ -12,6 +12,8 @@ Exit status is non-zero when something failed.
 """
 
 import os
+import re
+import subprocess
 import sys
 import time
 import traceback
@@ -22,11 +24,15 @@ sys.path.insert(0, os.path.join(ROOT, "dev"))
 sys.path.insert(0, os.path.join(ROOT, "src"))
 
 import lo  # noqa: E402  (also puts pyuno on sys.path)
+import uno  # noqa: E402  (needs lo to have set that up)
 
 from plan_impress import config, core  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "fixtures", "sections.odp")
+NO_FOOTER_FIXTURE = os.path.join(HERE, "fixtures", "sections_no_footer.odp")
 SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
+#: what ``tests/make_fixture.py`` writes into the footer of every slide
+FOOTER_TEXT = "Quarterly Review 2026"
 
 RESULTS = []
 
@@ -373,6 +379,286 @@ def plan_slide_typography():
         assert checked == 4, checked
     finally:
         lo.close(doc)
+
+
+def _plan_pages(doc):
+    """``(index, page)`` for every slide this extension generated."""
+    pages = doc.DrawPages
+    return [(i, pages.getByIndex(i)) for i in range(pages.Count)
+            if str(pages.getByIndex(i).Name).startswith(core.PLAN_PREFIX)]
+
+
+def _pdf_page_texts(doc, name):
+    """The text of each page **as rendered**, via a PDF export.
+
+    ``getString()`` is no guide for a footer: a field portion answers with the
+    placeholder stored in the file (``<number>``, ``<footer>``) rather than the
+    number or text that is drawn, so whether a footer really appears can only be
+    read off the output.  ``pdftotext`` (poppler) is what ``dev/render_plan.py``
+    uses for the same reason.
+    """
+    folder = os.path.join(ROOT, "out", "tests-pdf")
+    os.makedirs(folder, exist_ok=True)
+    pdf = os.path.join(folder, "%s.pdf" % name)
+    if os.path.exists(pdf):
+        os.remove(pdf)
+    doc.storeToURL(uno.systemPathToFileUrl(pdf),
+                   (lo.pv("FilterName", "impress_pdf_Export"),))
+    texts = []
+    for number in range(1, doc.DrawPages.Count + 1):
+        result = subprocess.run(
+            ["pdftotext", "-f", str(number), "-l", str(number), pdf, "-"],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            raise Skip("pdftotext failed: %s" % (result.stderr or "").strip()[:120])
+        texts.append(result.stdout)
+    return texts
+
+
+def _footer_band(page):
+    """``{kind: (x, y, width, height, char height)}`` for the bottom band.
+
+    The rendered text is deliberately not part of this - see
+    :func:`_pdf_page_texts` for why.  The height is kept separate from the
+    position because Impress fits a text shape's height to its content, so a
+    mirrored shape may differ there by a fraction of a millimetre.
+    """
+    out = {}
+    for shape in core._footer_shapes(page):
+        position, size = shape.Position, shape.Size
+        out[core._footer_kind(shape)] = (position.X, position.Y, size.Width,
+                                         size.Height, getattr(shape, "CharHeight", None))
+    return out
+
+
+def _install_footer_band(doc, page, master):
+    """Give ``page`` the footer frames a deck written elsewhere carries per slide.
+
+    The standalone version, with the measurements, is ``dev/debug_footer_saved.py``.
+    Two things it depends on: a footer shape created by ``createInstance`` arrives
+    *holding its own field*, so it has to be emptied before anything is put in it,
+    and the content has to be a field rather than text for the date and the page
+    number to stay live on every slide.
+    """
+    fields = {"FooterShape": "com.sun.star.presentation.TextField.Footer",
+              "DateTimeShape": "com.sun.star.text.TextField.DateTime",
+              "SlideNumberShape": "com.sun.star.text.TextField.PageNumber"}
+    installed = []
+    for shape in core._footer_shapes(master):
+        kind = core._footer_kind(shape)
+        if kind not in fields:
+            continue
+        try:
+            fresh = doc.createInstance("com.sun.star.presentation.%s" % kind)
+            page.add(fresh)
+            fresh.Position = shape.Position
+            fresh.Size = shape.Size
+            fresh.CharHeight = shape.CharHeight
+            text = fresh.getText()
+            cursor = text.createTextCursor()
+            cursor.gotoStart(False)
+            cursor.gotoEnd(True)
+            text.insertString(cursor, "", True)
+            text.insertTextContent(text.createTextCursor(),
+                                   doc.createInstance(fields[kind]), False)
+        except Exception as error:
+            raise AssertionError("could not install a %s: %s (%s)"
+                                 % (kind, type(error).__name__, error))
+        installed.append(kind)
+    return installed
+
+
+@test
+def plan_slides_carry_the_decks_footer():
+    """The generated slides show the same bottom band as the rest of the deck.
+
+    Impress keeps the footer on the *slide* (``com.sun.star.presentation.DrawPage``:
+    ``FooterText``, ``DateTimeText`` and the ``Is...Visible`` switches), so a page
+    made by ``insertNewByIndex`` starts without one and the plan slides used to
+    come out bare while every slide of the deck had a footer.  Checked twice: on
+    the properties, and in the rendered PDF - a footer that is in the model but
+    not on the page passes only the second check.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        donor = core._footer_state(doc.DrawPages.getByIndex(0))
+        assert donor.get("FooterText") == FOOTER_TEXT, donor
+        report = core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        assert report["footer"] == "welcome", report
+
+        plan = _plan_pages(doc)
+        assert len(plan) == 4, [(index, page.Name) for index, page in plan]
+        for _index, page in plan:
+            state = core._footer_state(page)
+            for name, value in donor.items():
+                assert state.get(name) == value, (page.Name, name, state.get(name), value)
+
+        texts = _pdf_page_texts(doc, "footer")
+        reference = texts[core.page_names(doc).index("welcome")]
+        dates = re.findall(r"\d+[/.]\d+[/.]\d+", reference)
+        assert dates, ("the deck's own slide prints no date: %r" % reference)
+        for index, page in plan:
+            assert FOOTER_TEXT in texts[index], (page.Name, texts[index])
+            assert dates[0] in texts[index], (page.Name, texts[index])
+            # a real page-number field: it prints the plan slide's own number
+            assert str(index + 1) in texts[index], (page.Name, texts[index])
+    finally:
+        lo.close(doc)
+
+
+@test
+def plan_slides_mirror_the_decks_footer_shapes():
+    """A deck that carries its footer frames on every slide gets them copied too.
+
+    That is how a deck written by something other than Impress stores the band
+    (``presentation:class="footer"`` frames in ``content.xml``), and there the page
+    properties are not enough: the master has nothing to draw from.  The shapes
+    have to be recreated - same place, same size, same type size - with their
+    *fields*, because a copied page-number field still prints the number of the
+    slide it now sits on.
+
+    The deck is saved and reopened before the plan slides are generated: the case
+    the user has is a deck off the disk, and a field read from a file is not the
+    object that was created (``dev/debug_footer_saved.py``).
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        master = doc.MasterPages.getByIndex(0)
+        slide = doc.DrawPages.getByIndex(0)
+        installed = _install_footer_band(doc, slide, master)
+        assert installed == ["DateTimeShape", "FooterShape", "SlideNumberShape"], installed
+        donor = _footer_band(slide)
+        # every kind of band shape must have a field service to fall back on
+        assert set(core.FOOTER_FIELD_SERVICES) >= set(core.FOOTER_SHAPE_KINDS), \
+            core.FOOTER_FIELD_SERVICES
+        saved = os.path.join(ROOT, "out", "deck-with-footers.odp")
+        os.makedirs(os.path.dirname(saved), exist_ok=True)
+        doc.storeToURL(uno.systemPathToFileUrl(saved),
+                       (lo.pv("FilterName", "impress8"),))
+    finally:
+        lo.close(doc)
+
+    doc = lo.open_doc(desk, saved, hidden=False)
+    try:
+        band = _footer_band(doc.DrawPages.getByIndex(0))
+        assert sorted(band) == sorted(donor), (sorted(band), sorted(donor))
+        for kind, wanted in donor.items():
+            assert band[kind][:3] == wanted[:3], (kind, band[kind], wanted)
+
+        report = core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        assert report["footer"] == "welcome", report
+        plan = _plan_pages(doc)
+        assert len(plan) == 4, plan
+        for index, page in plan:
+            got = _footer_band(page)
+            assert sorted(got) == sorted(donor), (page.Name, sorted(got), sorted(donor))
+            for kind, wanted in donor.items():
+                got_x, got_y, got_w, got_h, got_pt = got[kind]
+                x, y, width, height, char_height = wanted
+                assert (got_x, got_y, got_w) == (x, y, width), \
+                    (page.Name, kind, (got_x, got_y, got_w), (x, y, width))
+                assert abs(got_h - height) < 60, (page.Name, kind, got_h, height)
+                assert got_pt == char_height, (page.Name, kind, got_pt, char_height)
+
+        texts = _pdf_page_texts(doc, "footer-shapes")
+        # what one of the deck's own slides prints, the plan slides must print too
+        reference = texts[core.page_names(doc).index("welcome")]
+        dates = re.findall(r"\d+[/.]\d+[/.]\d+", reference)
+        assert dates, ("no date on the deck's own slide: %r" % reference)
+        for index, page in plan:
+            assert FOOTER_TEXT in texts[index], (page.Name, texts[index])
+            assert dates[0] in texts[index], (page.Name, texts[index])
+            # a live page-number field: the plan slide's own number, not the donor's
+            assert str(index + 1) in texts[index], (page.Name, texts[index])
+    finally:
+        lo.close(doc)
+
+
+@test
+def plan_slides_do_not_invent_a_footer():
+    """A deck with nothing in the bottom band must not get a footer either.
+
+    The obvious way to "fix" a missing footer - always copy the master's band, or
+    always switch ``IsFooterVisible`` on - adds a date and a page number to decks
+    that never asked for one.  ``sections_no_footer.odp`` is the case to catch
+    that: the switches are on there (Impress leaves them on) but nothing prints.
+    """
+    if not os.path.exists(NO_FOOTER_FIXTURE):
+        raise Skip("regenerate the fixtures: python3 tests/make_fixture.py")
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, NO_FOOTER_FIXTURE, hidden=False)
+    try:
+        assert core.footer_source(doc) is None, "this deck has nothing to print"
+        report = core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        assert report["footer"] is None, report
+        for _index, page in _plan_pages(doc):
+            assert core._footer_shapes(page) == [], page.Name
+            state = core._footer_state(page)
+            assert not str(state.get("FooterText") or "").strip(), (page.Name, state)
+        texts = _pdf_page_texts(doc, "no-footer")
+        for index, page in _plan_pages(doc):
+            # no footer text, no date, no page number: no digits at all
+            assert not re.search(r"\d", texts[index]), (page.Name, texts[index])
+    finally:
+        lo.close(doc)
+
+
+@test
+def footer_source_is_the_slide_that_prints_something():
+    """Which slide the band is copied from, without an office.
+
+    ``IsFooterVisible`` being true is not a footer: the author can switch it on
+    and type nothing, and then there is nothing to copy.  The trap this pins is
+    treating a switch as content, which would hand every plan slide a footer the
+    deck does not have.
+    """
+    class Shape(object):
+        def __init__(self, kind):
+            self.ShapeType = "com.sun.star.presentation." + kind
+
+    class Page(object):
+        def __init__(self, name, shapes=(), **properties):
+            self.Name = name
+            self.shapes = list(shapes)
+            self.Count = len(self.shapes)
+            for property_name, value in properties.items():
+                setattr(self, property_name, value)
+
+        def getByIndex(self, index):
+            return self.shapes[index]
+
+    class Document(object):
+        def __init__(self, pages):
+            self.DrawPages = type("Pages", (), {})()
+            self.DrawPages.pages = list(pages)
+            self.DrawPages.Count = len(pages)
+            self.DrawPages.getByIndex = lambda index: pages[index]
+
+    switched_on_but_empty = Page(
+        "blank", IsFooterVisible=True, FooterText="   ", IsDateTimeVisible=True,
+        IsDateTimeFixed=True, DateTimeText="", IsPageNumberVisible=False)
+    assert core.footer_source(Document([switched_on_but_empty])) is None
+
+    typed_footer = Page("typed", FooterText="Quarterly Review", IsFooterVisible=True)
+    assert core.footer_source(Document([switched_on_but_empty, typed_footer])) \
+        is typed_footer
+    # a page number alone is content, and so is a date that is a field
+    numbered = Page("numbered", IsPageNumberVisible=True)
+    assert core.footer_source(Document([numbered])) is numbered
+    dated = Page("dated", IsDateTimeVisible=True, IsDateTimeFixed=False)
+    assert core.footer_source(Document([dated])) is dated
+    # frames on the slide count even when the properties say nothing
+    framed = Page("framed", shapes=[Shape("FooterShape")])
+    assert core.footer_source(Document([framed])) is framed
+    # a generated slide is never the source: it is what we are writing
+    generated = Page(core.PLAN_PREFIX + "Overview", FooterText="copy of a copy")
+    assert core.footer_source(Document([generated])) is None
+    assert core.footer_source(Document([generated, typed_footer])) is typed_footer
 
 
 @test

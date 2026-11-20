@@ -6,7 +6,7 @@
 #   make start      start the isolated office (UI mode, UNO socket on 2009)
 #   make stop       stop only that instance
 #   make icons      regenerate src/icons/*.png
-#   make fixture    regenerate tests/fixtures/sections.odp
+#   make fixture    regenerate the fixture decks in tests/fixtures/
 #   make clean      remove build output (never your documents)
 #
 # Everything runs against a profile inside this checkout (loprofile/) and a
@@ -41,6 +41,7 @@ fixture:
 
 test: install
 	@test -f tests/fixtures/sections.odp || $(PY) tests/make_fixture.py
+	@test -f tests/fixtures/sections_no_footer.odp || $(PY) tests/make_fixture.py
 	$(PY) tests/run_tests.py
 
 # Fast loop for the pure-Python part (no office needed).

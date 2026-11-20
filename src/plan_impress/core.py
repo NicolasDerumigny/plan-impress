@@ -447,7 +447,257 @@ def _clear_page(page):
             pass
 
 
-def build_plan_slide(doc, page, section_names, current, settings):
+# --------------------------------------------------------------------------- #
+# the footer band
+# --------------------------------------------------------------------------- #
+#
+# Impress keeps the bottom of a slide per *slide*, not per document: the
+# ``com.sun.star.presentation.DrawPage`` service that every ``DrawPages`` entry
+# supports carries the four ODF ``presentation:display-*`` switches as
+# ``IsFooterVisible`` / ``IsDateTimeVisible`` / ``IsPageNumberVisible`` /
+# ``IsDateTimeFixed``, plus ``FooterText``, ``DateTimeText`` and
+# ``DateTimeFormat``.  Asking the *document* for them raises ``AttributeError``,
+# and a page made by ``insertNewByIndex`` starts with all of them empty - which
+# is why a generated slide showed no footer while every slide of the deck showed
+# one.  ``dev/debug_footer_render.py`` exports the alternatives side by side.
+#
+# The properties are the whole story for a deck authored in Impress, because
+# what draws the text is the master page's own footer placeholders (an empty
+# footer shape added to the page draws nothing and hides nothing).  A deck
+# written by something else keeps a footer frame on each slide instead, so those
+# shapes are recreated as well.
+
+#: the slide properties that make up the footer
+FOOTER_PROPERTIES = ("IsFooterVisible", "IsDateTimeVisible", "IsPageNumberVisible",
+                     "IsDateTimeFixed", "DateTimeFormat", "FooterText",
+                     "DateTimeText")
+
+#: the shapes of that band, matched on the tail of their ``ShapeType``
+FOOTER_SHAPE_KINDS = ("HeaderShape", "DateTimeShape", "FooterShape", "SlideNumberShape")
+
+#: character properties worth taking from one of those shapes
+FOOTER_STYLE = ("CharHeight", "CharHeight Asian", "CharColor", "CharWeight",
+                "CharFontName", "CharPosture", "CharUnderline", "TextAnchor",
+                "TextAnchorKind", "ParaAdjust")
+
+
+def _footer_kind(shape):
+    """``'FooterShape'`` and friends for a shape of the bottom band, else None.
+
+    ``supportsService`` does not work here: these shapes report the plain text
+    services as well, and ``PresentationShapeType`` is not a property of them.
+    """
+    shape_type = str(getattr(shape, "ShapeType", ""))
+    for kind in FOOTER_SHAPE_KINDS:
+        if shape_type.endswith("." + kind):
+            return kind
+    return None
+
+
+def _footer_shapes(page):
+    """The footer-band shapes a page carries of its own."""
+    out = []
+    for i in range(page.Count):
+        try:
+            shape = page.getByIndex(i)
+        except Exception:
+            continue
+        if _footer_kind(shape):
+            out.append(shape)
+    return out
+
+
+def _footer_state(page):
+    """The slide's footer settings, as far as this build exposes them."""
+    state = {}
+    for name in FOOTER_PROPERTIES:
+        try:
+            state[name] = getattr(page, name)
+        except Exception:
+            continue
+    return state
+
+
+def _footer_prints(state, shapes):
+    """Would this footer show anything?
+
+    ``IsFooterVisible`` on its own is not a footer: a slide whose footer is
+    switched on but empty prints nothing, so copying it would buy nothing.
+    """
+    if str(state.get("FooterText") or "").strip():
+        return True
+    if str(state.get("DateTimeText") or "").strip():
+        return True
+    if state.get("IsDateTimeVisible") and not state.get("IsDateTimeFixed"):
+        return True                                 # the date field prints today
+    if state.get("IsPageNumberVisible"):
+        return True
+    return bool(shapes)
+
+
+def footer_source(doc):
+    """The slide the plan slides should take their footer from, or ``None``.
+
+    The first slide of the deck - generated ones excluded - whose bottom band
+    prints something.  ``None`` means the deck has no footer at all, and the plan
+    slides must not grow one either.
+    """
+    pages = doc.DrawPages
+    for i in range(pages.Count):
+        page = pages.getByIndex(i)
+        if _is_plan_page(page):
+            continue
+        if _footer_prints(_footer_state(page), _footer_shapes(page)):
+            return page
+    return None
+
+
+#: the text field each kind of footer shape holds.  A footer shape read out of a
+#: file holds a field whose *object* pyuno cannot get at - ``getPropertyValue
+#: ("TextField")`` on the portion raises - so it is recreated from the service
+#: the master's own field reports (``dev/debug_footer_switches.py`` lists them).
+FOOTER_FIELD_SERVICES = {
+    "HeaderShape": "com.sun.star.presentation.TextField.Header",
+    "DateTimeShape": "com.sun.star.presentation.TextField.DateTime",
+    "FooterShape": "com.sun.star.presentation.TextField.Footer",
+    "SlideNumberShape": "com.sun.star.text.TextField.PageNumber",
+}
+
+
+def _insert_footer_field(doc, text, cursor, portion, kind):
+    """Copy one field of a footer shape into ``text``; True when it worked.
+
+    The field object is inserted as it stands when it can be read - the master's
+    page-number field, inserted into another shape, then prints *that* shape's own
+    page number, not the donor's (``dev/debug_footer_switches.py``).  When the
+    portion will not hand it over, it is created from the service of the same kind
+    instead (``dev/debug_footer_saved.py`` prints the services the loaded fields
+    report): the shape it lands in is already the right thing for Impress to fill.
+    """
+    try:
+        field = portion.getPropertyValue("TextField")
+    except Exception:
+        field = None
+    if field is None:
+        service = FOOTER_FIELD_SERVICES.get(kind)
+        if service is None:
+            return False
+        try:
+            field = doc.createInstance(service)
+        except Exception:
+            return False
+    try:
+        text.insertTextContent(cursor, field, False)
+        return True
+    except Exception:
+        return False
+
+
+def _copy_paragraphs(doc, source, target, kind=None):
+    """Copy a footer shape's text, its *fields* included.
+
+    The date and the page number of a footer are not characters but text fields:
+    copying them as text would freeze whatever the donor happened to print, and
+    ``getString()`` of such a portion does not even answer with that - it returns
+    the placeholder stored in the file (``<footer>``, ``<number>``).  So the field
+    itself travels (:func:`_insert_footer_field`) and only genuine text portions
+    are copied as text, which is what a typed footer is.
+    """
+    text = target.getText()
+    cursor = text.createTextCursor()
+    cursor.gotoStart(False)
+    cursor.gotoEnd(True)
+    try:
+        text.insertString(cursor, "", True)     # drop what the shape came with
+    except Exception:
+        pass
+    cursor.gotoEnd(False)
+    try:
+        paragraphs = list(source.createEnumeration())
+    except Exception:
+        paragraphs = []
+    for index, paragraph in enumerate(paragraphs):
+        if index:
+            text.insertString(cursor, "\n", False)
+        try:
+            portions = list(paragraph.createEnumeration())
+        except Exception:
+            continue
+        for portion in portions:
+            try:
+                is_field = portion.getPropertyValue("TextPortionType") == "TextField"
+            except Exception:
+                is_field = False
+            if is_field:
+                # whatever happens, the text of a field portion is not copied: it
+                # is the placeholder, not what the slide prints
+                _insert_footer_field(doc, text, cursor, portion, kind)
+                continue
+            try:
+                string = portion.getString()
+            except Exception:
+                string = ""
+            if string:
+                text.insertString(cursor, string, False)
+
+
+def _copy_style(source, target):
+    """Copy the character and anchoring properties a footer shape exposes."""
+    for name in FOOTER_STYLE:
+        try:
+            value = source.getPropertyValue(name)
+        except Exception:
+            continue
+        try:
+            target.setPropertyValue(name, value)
+        except Exception:
+            pass
+
+
+def _mirror_footer_shapes(doc, page, source_page):
+    """Recreate the deck's own footer frames on ``page``; returns the kinds."""
+    added = []
+    for shape in _footer_shapes(source_page):
+        kind = _footer_kind(shape)
+        try:
+            fresh = doc.createInstance(str(shape.ShapeType))
+            page.add(fresh)
+        except Exception:
+            continue                        # a footer service this build lacks
+        try:
+            fresh.Position = shape.Position
+            fresh.Size = shape.Size
+        except Exception:
+            pass
+        _copy_style(shape, fresh)
+        _copy_paragraphs(doc, shape, fresh, kind)
+        added.append(kind)
+    return added
+
+
+def apply_footer(doc, page, source_page=None):
+    """Give ``page`` the footer the rest of the deck has.
+
+    ``source_page`` is the slide to copy from; ``footer_source(doc)`` when it is
+    not given.  Returns what was set - the footer properties and the kinds of
+    shape recreated - so callers and tests can see that it did something.
+    """
+    if source_page is None:
+        source_page = footer_source(doc)
+    if source_page is None or source_page is page:
+        return {}
+    done = {}
+    for name, value in _footer_state(source_page).items():
+        try:
+            setattr(page, name, value)
+            done[name] = value
+        except Exception:
+            pass
+    done["shapes"] = _mirror_footer_shapes(doc, page, source_page)
+    return done
+
+
+def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     """Fill ``page`` with the heading plus every section name.
 
     ``current`` is the index of the highlighted section, or ``None`` for the
@@ -455,11 +705,14 @@ def build_plan_slide(doc, page, section_names, current, settings):
 
     Position and size come from the master's own placeholders where they are
     usable, and the body is additionally sized so the whole list fits between
-    the heading and the bottom of the slide.
+    the heading and the bottom of the slide.  ``footer`` is the slide to take the
+    footer band from (see :func:`apply_footer`); it is looked up once per
+    ``insert_plan`` and found here otherwise.
     """
     master = _master_page(doc, settings.get("master", ""))
     page.MasterPage = master
     _clear_page(page)
+    apply_footer(doc, page, footer)
 
     if not section_names:
         raise PlanError("There are no sections to list.")
@@ -526,6 +779,10 @@ def insert_plan(doc, settings, ctx=None):
 
     names = [s["name"] or "(untitled)" for s in sections]
 
+    # The generated slides belong to the deck, so they carry its footer.  Looked
+    # up once, from the deck's own slides, before the generated ones exist.
+    footer = footer_source(doc)
+
     # Insert bottom-up: adding a page shifts every index below it, so starting
     # from the last section keeps the still-pending targets valid.
     inserted = 0
@@ -546,13 +803,13 @@ def insert_plan(doc, settings, ctx=None):
     # Pages are named uniquely; re-read so the shapes go on the right pages.
     pages = doc.DrawPages
     by_name = {pages.getByIndex(i).Name: pages.getByIndex(i) for i in range(pages.Count)}
-    build_plan_slide(doc, by_name[OVERVIEW_NAME], names, None, settings)
+    build_plan_slide(doc, by_name[OVERVIEW_NAME], names, None, settings, footer)
     for position, section in enumerate(sections):
         page = by_name.get(SECTION_NAME_TEMPLATE % position)
         if page is None:
             raise PlanError("Internal error: plan slide for section '%s' is missing."
                             % names[position])
-        build_plan_slide(doc, page, names, position, settings)
+        build_plan_slide(doc, page, names, position, settings, footer)
 
     # Rewrite the sections so each plan slide leads its section.  The overview
     # deliberately stays outside of every section.
@@ -566,6 +823,8 @@ def insert_plan(doc, settings, ctx=None):
         "sections": len(sections),
         "inserted": inserted,
         "overview": OVERVIEW_NAME,
+        #: the slide the footer band was taken from, None when the deck has none
+        "footer": str(footer.Name) if footer is not None else None,
         "slides": page_names(doc),
         "sections_after": final,
     }
