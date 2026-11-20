@@ -341,6 +341,9 @@ reproducible with a script in `dev/`.
 43. `core.footer_source()` picks the first non-generated slide whose band prints
     something, or `None`; `insert_plan` looks it up once and passes the same slide
     to every `build_plan_slide`, so all plan slides agree with each other.
+
+### The settings dialog's own look (`dialog.py`)
+
 44. **The dialog sets its own text size.** Control models take `FontHeight` in
     points, and at the original 10 the labels measured 13 px of ink where a Plan
     menu item measures 14 px — the report was "text on the setting pane is smaller
@@ -356,9 +359,12 @@ reproducible with a script in `dev/`.
 46. Nothing on a control peer tells you what font it renders: `FontDescriptor`,
     `FontName` and `FontHeight` are all absent from the peer proxy
     (`dev/debug_font.py` prints `<none>` for every one). Judge text size from
-    pixels — `dev/measure_text.py` counts the bright rows of a screenshot (this theme
-    is dark, so text is the *light* pixels: thresholding for dark pixels measures the
-    background and reports every row as text).
+    pixels — `dev/measure_text.py` counts the bright rows of a screenshot (this
+    theme is dark, so text is the *light* pixels: thresholding for dark pixels
+    measures the background and reports every row as text).
+
+### Verifying a change (both agents hit both of these)
+
 47. When you check that a test fails without the fix by editing `src/` and putting it
     back: if the edit and the restore land in the same second and the file ends up the
     same size, the `.pyc` keeps the mutated bytecode and the "restored" run still
@@ -373,10 +379,11 @@ reproducible with a script in `dev/`.
 ### The template's own look (`core.py`)
 
 A generated slide has to look like the deck's own slides were *edited*. Everything
-below was measured with `dev/debug_numbering.py` (one PDF, a slide per variant) on
-LibreOffice 26.8.
+below was measured with `dev/debug_numbering.py` (one PDF, a slide per variant) and
+`dev/debug_style_source.py` (what the masters, the deck's own slides and the
+generated ones say about themselves, side by side) on LibreOffice 26.8.
 
-44. **Inherit the master's list level and write only `NumberingType`.** Copy all
+49. **Inherit the master's list level and write only `NumberingType`.** Copy all
     ten levels of the master content placeholder's `NumberingRules` and patch the
     first one: a rules object built from scratch gives the digits a font, a size, a
     gap and a colour of their own, and they look pasted onto the slide.
@@ -385,7 +392,7 @@ LibreOffice 26.8.
     a value pyuno marshals from a string arrives as 0, i.e. no label at all — and
     the level goes back as `uno.Any("[]com.sun.star.beans.PropertyValue",
     tuple(level))`. `Prefix` and `Suffix` are literal text: `"%1."` prints `%1.`.
-45. **The properties that describe the glyph have to be re-asked for.**
+50. **The properties that describe the glyph have to be re-asked for.**
     `BulletRelSize` sizes the *character* the template draws — the fixture's master
     asks for 45 % of the text height, which is an unreadable digit — so when the
     label is a special character (`NumberingType` 6 or 8) it becomes
@@ -395,7 +402,7 @@ LibreOffice 26.8.
     `ParaLeftMargin`/`ParaFirstLineIndent`, so those are set from the level's indent
     or the digit sits on the text (`1Introduction`). `SymbolTextDistance` is no
     help: writes to it are ignored and it mirrors `FirstLineOffset`.
-46. **Dim a row's number with a rules object of its own.** The label is painted with
+51. **Dim a row's number with a rules object of its own.** The label is painted with
     the level's `BulletColor`, so one copy of the rules per paragraph differing in
     that one property dims the sections that are not the current one — and the list
     still counts 1, 2, 3 across the different rule objects. The `Bullet*` properties
@@ -403,14 +410,18 @@ LibreOffice 26.8.
     `BulletNumberingType`, `BulletRelSize` all raise), which is why the rules have to
     be copied. A template that fixes no bullet colour (`-1` = follow the text) gets
     the highlight colour on the current row.
-47. **Mirror the master placeholder's characters onto the shape *and* onto its
-    paragraphs.** A shape from `createInstance()` comes in the page style's font, and
-    a *paragraph* of an outline placeholder comes in the page style's outline level —
-    `CharWeight` 150 where the master's own placeholder says 100, so the list
-    rendered bold next to the deck's own slides. `core.CHAR_ATTRIBUTES` is the
-    shape's list, `core.PARAGRAPH_ATTRIBUTES` the paragraph's (no `CharStyleName`,
-    which a paragraph does not have; no `CharHeight`/`CharColor`, which are ours).
-48. **Setting `page.Layout` creates the placeholders.** `page.Layout = 2` on a fresh
+52. **Mirror the template placeholder's characters onto the shape *and* onto its
+    paragraphs, from its first paragraph.** A shape from `createInstance()` comes in
+    the page style's font, and a *paragraph* of an outline placeholder comes in the
+    page style's outline level — `CharWeight` 150 where the template's own
+    placeholder says 100, so the list rendered bold next to the deck's own slides.
+    The source is the template placeholder's **first paragraph** (`_first_paragraph`)
+    when it has one and its shape otherwise: on a real master the two disagree, and
+    the paragraph is the outline level the deck is drawn with.
+    `core.CHAR_ATTRIBUTES` is the shape's list, `core.PARAGRAPH_ATTRIBUTES` the
+    paragraph's (no `CharStyleName`, which a paragraph does not have; no
+    `CharHeight`/`CharColor`, which are ours).
+53. **Setting `page.Layout` creates the placeholders.** `page.Layout = 2` on a fresh
     page hands back a `TitleTextShape` and an `OutlinerShape` of its own, so adding
     shapes without looking for them yields four; `_ensure_placeholder()` reuses what
     is there. No dispatch route does it better: `.uno:AssignLayout?Layout:short=2`,
@@ -419,6 +430,34 @@ LibreOffice 26.8.
     `apply_footer()` runs right after it: assigning a layout re-deals the
     placeholders, so a footer frame mirrored onto the page before it is at the mercy
     of that step.
+54. **The deck's own slides are the template; the master page is the fallback.**
+    `_style_source()` asks the slides first (`_deck_placeholder`) and the master
+    only where no slide has anything to copy, because a slide keeps the box and the
+    characters it was given and the two disagree on any deck somebody worked on —
+    measured on a deck off the disk, whose master placeholder says `1800,1500`
+    `24400x1040` at **32 pt** while its six content slides are all at `1800,1474`
+    `24400x1094` at **31 pt**: taking the master produced a heading a point larger
+    than the deck's own, a few tenths of a millimetre away from it. The value the
+    slides *agree on* wins (they are counted per rectangle-and-look), which is what
+    keeps one hand-edited slide, or the cover slide that is usually first, from
+    moving the generated ones; `dev/debug_style_source.py` prints the three sets
+    side by side.
+55. **A presentation placeholder's characters live on its paragraphs.** A master's
+    content placeholder keeps **one paragraph per outline level**, so its first
+    paragraph is level 1 and is what the slides paint with; the shape's own
+    `CharHeight` is only the default underneath it (`32` against the paragraph's
+    `31`, `20`/regular against `21`/semibold on the deck above). Ask the paragraph
+    first (`_master_char_height`, `_first_paragraph`) — on the shape's value the list
+    came out smaller and lighter than the deck's own body text.
+56. **The heading has to be measured where it *paints*, not by its box.**
+    Presentation placeholders anchor their text in the middle of the box, so a
+    template box twice as tall as its one line leaves the text in the middle of the
+    box; the list only has to clear *that*. `_heading_bottom()` takes the anchor
+    (`_text_anchor`, read back from the shape after mirroring) and returns the bottom
+    of the painted line — box top + line for `TOP`, box top + (box + line)/2 for
+    `CENTER`, box bottom for `BOTTOM`. Comparing against the box's top let the list
+    overlap the heading on the fixture (its title box spans 1575..4725 while its
+    body box starts at 3685).
 
 ## Testing notes
 
@@ -432,17 +471,21 @@ The suite covers: settings round-trip and corrupt-file tolerance, where the
 settings file is allowed to live, colour helpers, the point/unit conversion, the
 dialog's *geometry* (every control's rectangle in the specs, and the real peer
 geometry: distinct positions, non-zero sizes, nothing outside the window) plus a
-control model with a native peer and read-back values, the inserted layout
+control model with a native peer and read-back values and the dialog's **text**
+(every control that shows words sets a `FontHeight` the size of the menu's, and
+each row leaves clear air under the field above it), the inserted layout
 (position of every plan slide, per-paragraph colours, the overview outside all
 sections), a deck whose first slide belongs to no section, readable font sizes
 with nothing drawn off the slide, the footer (copied from the deck's own slides
 and rendered, frames mirrored onto a deck that carries them, and no footer
 invented in a deck that has none), the template's own look
-(`plan_slides_use_the_template_placeholders`: the master's placeholders and their
-rectangles, the inherited list level with only the label replaced, the characters
-mirrored down to the paragraphs, the number of a dimmed row dimmed with it),
-idempotency and clean removal, the master-slide setting, `Addons.xcu` registration
-read back through the
+(`plan_slides_use_the_template_placeholders`: the deck's own placeholders and
+their rectangles, the list clearing the painted heading, the inherited list level
+with only the label replaced, the characters mirrored down to the paragraphs, the
+number of a dimmed row dimmed with it; and `plan_slides_copy_the_deck_own_slides`,
+where the master is left alone and the slides moved instead, so anything taken
+from the master shows up as a failure), idempotency and clean removal, the
+master-slide setting, `Addons.xcu` registration read back through the
 configuration provider, and the `service:` URL dispatch path a menu click takes.
 
 Things that are easy to break and are covered: re-running `insert_plan` must

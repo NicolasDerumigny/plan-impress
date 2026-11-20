@@ -503,10 +503,26 @@ def _text_shapes(page):
 
 def _paragraphs_of(shape):
     """The paragraphs of a text shape, as a list."""
+    if shape is None:
+        return []
     try:
         return list(shape.createEnumeration())
     except Exception:
         return []
+
+
+def _first_paragraph(shape):
+    """The first paragraph of a text shape, or ``None``.
+
+    A master's content placeholder keeps **one paragraph per outline level**, so its
+    first paragraph is how the template paints level-1 text and the shape's own
+    character properties are only the default underneath it - which is why the
+    character properties have to be asked for twice, from both (see
+    :func:`_make_text_shape`).
+    """
+    for paragraph in _paragraphs_of(shape):
+        return paragraph
+    return None
 
 
 def _is_title(shape):
@@ -575,6 +591,116 @@ def _body_shape(page):
         return candidates[0]
 
 
+def _placeholder_key(shape):
+    """What makes two placeholders "the same box, in the same look".
+
+    The vote that picks which of the deck's own placeholders to copy groups on this:
+    same rectangle and same characters, so a slide whose title was moved or resized
+    apart from the rest of the deck is simply outvoted.
+    """
+    return (int(shape.Position.X), int(shape.Position.Y),
+            int(shape.Size.Width), int(shape.Size.Height),
+            round(float(getattr(shape, "CharHeight", 0) or 0), 2),
+            str(getattr(shape, "CharFontName", "")),
+            round(float(getattr(shape, "CharWeight", 0) or 0), 1))
+
+
+def _deck_placeholder(doc, master, wanted):
+    """The placeholder the deck's own slides use for ``wanted``; None if none do.
+
+    A slide keeps the box and the characters it was given, so the slides of a real
+    deck routinely disagree with the master page: the deck this was measured on
+    titles its slides at ``y = 1474`` in **31 pt** while its master placeholder says
+    ``y = 1500`` in **32 pt**, and its body text is 21 pt semi-bold where the master
+    asks for 20 pt regular.  The audience sees the slides, so the slides are the
+    template and the master is the fallback - what a deck with no slide of that
+    master to compare with has to fall back on.
+
+    The value the slides agree on wins: every placeholder of the kind is counted per
+    rectangle-and-look and the most common one is used, so a single hand-edited
+    slide - or a cover slide, which is usually the first and the most different -
+    cannot move the generated slides somewhere else.
+    """
+    counted = {}
+    pages = doc.DrawPages
+    for i in range(pages.Count):
+        try:
+            page = pages.getByIndex(i)
+            same_master = str(page.MasterPage.Name) == str(master.Name)
+        except Exception:
+            continue
+        if not same_master or _is_plan_page(page):
+            continue
+        for shape in _text_shapes(page):
+            try:
+                if not wanted(shape):
+                    continue
+                key = _placeholder_key(shape)
+            except Exception:
+                continue
+            if key not in counted:
+                counted[key] = [1, shape]
+            else:
+                counted[key][0] += 1
+    if not counted:
+        return None
+    return max(counted.values(), key=lambda entry: entry[0])[1]
+
+
+def _style_source(doc, master):
+    """The two shapes the generated slides copy their look from: ``(title, body)``.
+
+    The deck's own slides first - see :func:`_deck_placeholder` - and the master's
+    placeholders only where no slide has anything to copy.  Both can be ``None`` for
+    a master that draws no placeholder of that kind, which is what the fallbacks in
+    :func:`build_plan_slide` are for.
+    """
+    title = _deck_placeholder(doc, master, _is_title)
+    if title is None:
+        title = _title_shape(master)
+    body = _deck_placeholder(doc, master, _is_content)
+    if body is None:
+        body = _body_shape(master)
+    return title, body
+
+
+def _text_anchor(shape):
+    """How a placeholder anchors its text in its box: "top", "centre" or "bottom".
+
+    Read back from the shape that was just built, so it is what the generated slide
+    really does: the value comes from the template through :func:`_make_text_shape`,
+    and only when the template said nothing at all does that function fall back to
+    top anchoring.
+    """
+    try:
+        value = str(getattr(shape.TextVerticalAdjust, "value", "")).lower()
+    except Exception:
+        return "top"
+    if value in ("center", "middle", "centered"):
+        return "centre"
+    if value == "bottom":
+        return "bottom"
+    return "top"
+
+
+def _heading_bottom(top, height, point_size, anchor):
+    """The lowest point the heading paints, in 1/100 mm.
+
+    The list has to start below that, and *painting* is not the bottom of the box:
+    a presentation placeholder anchored in the middle puts its one line in the
+    middle of the template's box, so a box twice as tall as the text leaves the text
+    - and the list that has to clear it - in the middle of the box.  The default
+    Impress template asks for that, which is how a plan slide came to have its list
+    a few millimetres inside the heading.
+    """
+    line = int(point_size * _UNITS_PER_POINT * _LINE_SPACING)
+    if anchor == "bottom":
+        return top + height
+    if anchor == "centre":
+        return top + (height + line) // 2
+    return top + line
+
+
 def _rect(shape, fallback_pos, fallback_size, page_width, page_height):
     """Reuse a master placeholder's rectangle so plan slides match the deck.
 
@@ -610,13 +736,24 @@ _UNITS_PER_POINT = 35.2778
 
 
 def _master_char_height(shape, fallback):
-    """The point size a master placeholder asks for, when it says something sane."""
-    value = getattr(shape, "CharHeight", None) if shape is not None else None
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return fallback
-    return value if 6.0 < value < 100.0 else fallback
+    """The point size the template paints with, when it says something sane.
+
+    The **first paragraph** wins over the shape: a master's content placeholder keeps
+    one paragraph per outline level and the slides are drawn with that level, so the
+    shape's own ``CharHeight`` is only the default underneath it.  Measured on a deck
+    off the disk: its title placeholder answers 32 pt as a shape and 31 pt as a
+    paragraph, and every title of the deck is drawn at 31 pt - taking the shape's
+    value put a heading a point larger next to the deck's own.
+    """
+    for source in (_first_paragraph(shape), shape):
+        value = getattr(source, "CharHeight", None) if source is not None else None
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if 6.0 < value < 100.0:
+            return value
+    return fallback
 
 
 def _fit_point_size(size, box_height, lines):
@@ -680,17 +817,23 @@ def _make_text_shape(doc, page, services, wanted, text, x, y, width, height,
                      char_height, bold=False, char_color=None, mirror=None):
     shape = _ensure_placeholder(doc, page, services, wanted)
     # before anything else: what the template says wins, and the properties set
-    # below are the deliberate exceptions to it
+    # below are the deliberate exceptions to it.  The characters come from the
+    # template placeholder's *first paragraph* where it has one: that is the
+    # outline level the template paints with, and it disagrees with the shape's own
+    # values on a real master (31 pt Light against 32 pt Roman on the heading)
+    mirror_text = _first_paragraph(mirror)
+    if mirror_text is None:
+        mirror_text = mirror
     copied = _mirror_characters(mirror, shape)
     shape.Size = _size(width, height)
     shape.Position = _point(x, y)
     shape.setString(text)
     # and the paragraphs of it: a paragraph of a new outline placeholder takes its
     # characters from the *page style's* outline level - bold 150 in the default
-    # template - which overrides whatever the shape says, so the master's
-    # placeholder has to be mirrored down to them as well
+    # template - which overrides whatever the shape says, so the template's own
+    # first paragraph has to be mirrored down to them as well
     for paragraph in _paragraphs_of(shape):
-        _mirror_characters(mirror, paragraph, PARAGRAPH_ATTRIBUTES)
+        _mirror_characters(mirror_text, paragraph, PARAGRAPH_ATTRIBUTES)
     try:
         shape.CharHeight = float(char_height)
     except Exception:
@@ -1246,8 +1389,8 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
 
     The heading and the list go into the master's own placeholders, so they get
     the template's position, font, colour and list indentation: the layout is
-    chosen *before* the shapes exist, the rectangles come from the master where
-    they fit on the page, and the point size comes from the master's placeholder
+    chosen *before* the shapes exist, the rectangles come from the template where
+    they fit on the page, and the point size is the one the template paints with
     (shrunk only when the list would not fit under the heading).  Overview and
     plan slides run through this one function with the same section list, which
     is what keeps their size and colours equal; what differs is only which
@@ -1275,29 +1418,32 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     highlight = settings["text_color"]
     muted = settings["muted_color"]
 
-    master_title = _title_shape(master)
-    tx, ty, tw, th = _rect(master_title, (width * 0.08, height * 0.05),
-                           (width * 0.84, height * 0.16), width, height)
-    title_pt = _master_char_height(master_title, _TITLE_PT)
-    _make_text_shape(doc, page, TITLE_SERVICES, _is_title,
-                     settings.get("title") or "Plan",
-                     tx, ty, tw, th, char_height=title_pt,
-                     bold=master_title is None, mirror=master_title)
+    # what the deck's own slides are drawn in, with the master page underneath as
+    # the fallback - the two disagree on decks authored in Impress
+    template_title, template_body = _style_source(doc, master)
 
-    master_body = _body_shape(master)
-    bx, by, bw, bh = _rect(master_body, (width * 0.10, height * 0.24),
+    tx, ty, tw, th = _rect(template_title, (width * 0.08, height * 0.05),
+                           (width * 0.84, height * 0.16), width, height)
+    title_pt = _master_char_height(template_title, _TITLE_PT)
+    title = _make_text_shape(doc, page, TITLE_SERVICES, _is_title,
+                             settings.get("title") or "Plan",
+                             tx, ty, tw, th, char_height=title_pt,
+                             bold=template_title is None, mirror=template_title)
+
+    bx, by, bw, bh = _rect(template_body, (width * 0.10, height * 0.24),
                            (width * 0.80, height * 0.66), width, height)
-    # the list has to start below the heading, whatever box the master suggests
-    below_heading = ty + int(title_pt * _UNITS_PER_POINT * _LINE_SPACING)
+    # the list has to start below the text of the heading, whatever box the
+    # template suggests - and where that text is depends on how the box anchors it
+    below_heading = _heading_bottom(ty, th, title_pt, _text_anchor(title))
     if by < below_heading:
         by = min(below_heading, int(height * 0.7))
         bh = max(int(height * 0.2), height - by - int(height * 0.05))
-    body_pt = _fit_point_size(_master_char_height(master_body, _BODY_PT),
+    body_pt = _fit_point_size(_master_char_height(template_body, _BODY_PT),
                               bh, len(section_names))
     body = _make_text_shape(doc, page, BODY_SERVICES, _is_content,
                             "\n".join(section_names), bx, by, bw, bh,
                             char_height=body_pt, char_color=highlight,
-                            mirror=master_body)
+                            mirror=template_body)
 
     if current is None:
         # the overview: nothing is "current", so nothing is dimmed
@@ -1308,7 +1454,8 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     # the number is painted with the level's BulletColor, so a dimmed section has
     # to dim its number separately; the current one keeps the colour the template
     # chose for its bullets (and a template that fixes none follows the text)
-    template_bullet = _level_value(_numbering_rules(master_body), "BulletColor")
+    rules = _numbering_rules(template_body)
+    template_bullet = _level_value(rules, "BulletColor")
     try:
         template_bullet = int(template_bullet)
     except (TypeError, ValueError):
@@ -1317,8 +1464,8 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
         template_bullet = highlight
     bullets = [template_bullet if color == highlight else muted
                for color in colors]
-    # the master's own first list level, only numbered, painted per row
-    _number_list(doc, body, _numbering_rules(master_body), bullets)
+    # the template's own first list level, only numbered, painted per row
+    _number_list(doc, body, rules, bullets)
     # last: the paragraph colour is what the text is drawn in, and with a level
     # that fixes no bullet colour it is what the number follows as well
     _paint_paragraphs(body, colors)

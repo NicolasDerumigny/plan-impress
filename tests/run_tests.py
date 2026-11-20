@@ -101,6 +101,38 @@ def point_size_conversion():
         assert core._master_char_height(Placeholder(nonsense), 32.0) == 32.0, nonsense
     assert core._master_char_height(None, 18.0) == 18.0
 
+    class Paragraph(object):
+        def __init__(self, height):
+            self.CharHeight = height
+
+    class PlaceholderWithLevel(Placeholder):
+        """A master placeholder whose first paragraph asks for another size.
+
+        That is what a real master looks like: its content placeholder keeps one
+        paragraph per outline level, and the level - not the shape - is what the
+        slides are drawn with.  Measured on a deck off the disk: 32 pt as a shape,
+        31 pt as a paragraph, and every title of the deck is 31 pt.
+        """
+
+        def __init__(self, height, level):
+            Placeholder.__init__(self, height)
+            self.level = level
+
+        def createEnumeration(self):
+            return iter([Paragraph(self.level)])
+
+    assert core._master_char_height(PlaceholderWithLevel(32.0, 31.0), 18.0) == 31.0
+    assert core._master_char_height(PlaceholderWithLevel(32.0, None), 18.0) == 32.0
+    assert core._master_char_height(PlaceholderWithLevel(32.0, 400), 18.0) == 32.0
+
+    # where the heading stops painting, which is where the list has to start
+    one_line = int(20.0 * core._UNITS_PER_POINT * core._LINE_SPACING)
+    assert core._heading_bottom(1000, 1000, 20.0, "top") == 1000 + one_line
+    assert core._heading_bottom(1000, 3000, 20.0, "bottom") == 4000
+    centred = core._heading_bottom(1000, 3000, 20.0, "centre")
+    assert 1000 + 1500 < centred < 1000 + 3000, centred
+    assert centred == 1000 + (3000 + one_line) // 2, centred
+
 
 @test
 def settings_roundtrip(tmp_path=os.path.join(ROOT, "out", "profile-test")):
@@ -641,16 +673,19 @@ def _level(rules, index=0):
 
 @test
 def plan_slides_use_the_template_placeholders():
-    """Heading and list are the master's own placeholders, and the list is numbered.
+    """Heading and list are the deck's own placeholders, and the list is numbered.
 
-    Four separate things, none of which a plain text shape at a computed rectangle
-    got right: the boxes come from the master (the list used to hug the left edge
-    in a font of its own), the page is on the title-plus-content layout - *set
-    before* the shapes exist, or Impress keeps the boxes it already gave them -,
-    the sections are the master's own first list level with only the label turned
-    into a number, and a dimmed row dims its number with it, which per-paragraph
-    colours alone do not do because the label is painted with the level's
-    ``BulletColor``.
+    Five separate things, none of which a plain text shape at a computed rectangle
+    got right: the boxes and the characters come from the deck's *own slides* - the
+    master page is the fallback under them, because a slide keeps the box and the
+    font it was given and disagrees with its master all the time (the list used to
+    hug the left edge in a font of its own) -, the page is on the title-plus-content
+    layout - *set before* the shapes exist, or Impress keeps the boxes it already
+    gave them -, the sections are the template's own first list level with only the
+    label turned into a number, the list starts below the *text* of the heading and
+    not below the middle of its box, and a dimmed row dims its number with it, which
+    per-paragraph colours alone do not do because the label is painted with the
+    level's ``BulletColor``.
     """
     ctx = lo.connect()
     desk = lo.desktop(ctx)
@@ -660,8 +695,11 @@ def plan_slides_use_the_template_placeholders():
         settings.update({"text_color": 0x102030, "muted_color": 0xCBCBCB})
         core.insert_plan(doc, settings, ctx)
         master = core._master_page(doc, "")
-        master_title, master_body = core._title_shape(master), core._body_shape(master)
-        assert master_body is not None, "the fixture's master has no content placeholder"
+        # what the deck paints with, which is not necessarily the master page
+        template_title, template_body = core._style_source(doc, master)
+        assert template_body is not None, "the fixture has no content placeholder"
+        assert template_title is not None, "the fixture has no title placeholder"
+        template_body_paragraph = core._first_paragraph(template_body) or template_body
         pages = doc.DrawPages
         by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
                    for i in range(pages.Count)}
@@ -674,21 +712,28 @@ def plan_slides_use_the_template_placeholders():
             assert title is not None and body is not None, name
             assert core._is_content(body), (name, body.ShapeType)
             assert (body.Position.X, body.Size.Width) == \
-                (master_body.Position.X, master_body.Size.Width), (
+                (template_body.Position.X, template_body.Size.Width), (
                     name, body.Position, body.Size,
-                    master_body.Position, master_body.Size)
-            wanted = core._rect(master_title, (page.Width * 0.08, page.Height * 0.05),
+                    template_body.Position, template_body.Size)
+            wanted = core._rect(template_title, (page.Width * 0.08, page.Height * 0.05),
                                 (page.Width * 0.84, page.Height * 0.16),
                                 page.Width, page.Height)
             assert (title.Position.X, title.Size.Width) == (wanted[0], wanted[2]), (
                 name, title.Position, title.Size, wanted)
+            # the list has to clear the heading's *text*: this template anchors it
+            # in the middle of a box twice as tall as the line, so the bottom of the
+            # box is well below where the heading ends and the box's top is above it
+            assert body.Position.Y >= core._heading_bottom(
+                title.Position.Y, title.Size.Height, title.CharHeight,
+                core._text_anchor(title)), (name, body.Position.Y, title.Position,
+                                            title.Size.Height, title.CharHeight)
 
-            # the list style is the master's own, with only the label replaced:
-            # the template's bullet font, size, indentation and label colour are
-            # what makes the number look like it belongs on the slide
+            # the list style is the template's own, with only the label replaced:
+            # the bullet font, size, indentation and label colour are what makes the
+            # number look like it belongs on the slide
             rules = dict((p.Name, p.Value)
                          for p in body.NumberingRules.getByIndex(0))
-            master_level = _level(core._numbering_rules(master_body))
+            master_level = _level(core._numbering_rules(template_body))
             assert rules["NumberingType"] == core._numbering_type_arabic(), (
                 name, rules)
             for attribute in ("Prefix", "Suffix", "BulletFont", "LeftMargin",
@@ -728,22 +773,30 @@ def plan_slides_use_the_template_placeholders():
                 # level, which is a bold of its own in the default template
                 for attribute in core.PARAGRAPH_ATTRIBUTES:
                     assert getattr(paragraph, attribute) == \
-                        getattr(master_body, attribute), (
+                        getattr(template_body_paragraph, attribute), (
                         name, attribute, getattr(paragraph, attribute),
-                        getattr(master_body, attribute))
+                        getattr(template_body_paragraph, attribute))
             # the label is drawn by the numbering, it is not in the text: copying a
             # section name out of the slide has to give back the plain name
             assert [para.getString() for para in paragraphs] == SECTION_NAMES, (
                 name, [para.getString() for para in paragraphs])
-            # the characters are the master's too - a shape built with
-            # createInstance() would come in the page style's font instead
-            for attribute in ("CharFontName", "CharHeight", "CharWeight"):
-                assert getattr(body, attribute) == getattr(master_body, attribute), (
+            # the characters are the template's too - a shape built with
+            # createInstance() would come in the page style's font instead.  The
+            # point size is the one the template *paints* with, which is what
+            # `_master_char_height` asks the first paragraph for.
+            for attribute in ("CharFontName", "CharWeight"):
+                assert getattr(body, attribute) == getattr(template_body, attribute), (
                     name, attribute, getattr(body, attribute),
-                    getattr(master_body, attribute))
-                assert getattr(title, attribute) == getattr(master_title, attribute), (
+                    getattr(template_body, attribute))
+                assert getattr(title, attribute) == getattr(template_title, attribute), (
                     name, attribute, getattr(title, attribute),
-                    getattr(master_title, attribute))
+                    getattr(template_title, attribute))
+            assert body.CharHeight == core._master_char_height(template_body, 0.0), (
+                name, body.CharHeight, template_body.CharHeight,
+                getattr(core._first_paragraph(template_body), "CharHeight", None))
+            assert title.CharHeight == core._master_char_height(template_title, 0.0), (
+                name, title.CharHeight, template_title.CharHeight,
+                getattr(core._first_paragraph(template_title), "CharHeight", None))
 
             # one size and one base colour for the overview and the plan slides;
             # only which paragraph is highlighted differs between them
@@ -760,15 +813,89 @@ def plan_slides_use_the_template_placeholders():
         colors = _paragraph_colors(core._body_shape(by_name[core.section_page_name(1)]))
         assert colors == [0xCBCBCB, 0x102030, 0xCBCBCB], colors
         body = core._body_shape(by_name[core.section_page_name(1)])
-        master_bullet = core._level_value(core._numbering_rules(master_body),
-                                          "BulletColor")
+        template_bullet = core._level_value(core._numbering_rules(template_body),
+                                            "BulletColor")
         # a template that fixes no bullet colour (-1 = "follow the character
         # colour") gets the highlight colour on the current row instead
-        current_bullet = master_bullet if isinstance(master_bullet, int) \
-            and master_bullet >= 0 else 0x102030
+        current_bullet = template_bullet if isinstance(template_bullet, int) \
+            and template_bullet >= 0 else 0x102030
         labels = [core._level_value(para.NumberingRules, "BulletColor")
                   for para in _paragraphs(body)]
-        assert labels == [0xCBCBCB, current_bullet, 0xCBCBCB], (labels, master_bullet)
+        assert labels == [0xCBCBCB, current_bullet, 0xCBCBCB], (labels, template_bullet)
+    finally:
+        lo.close(doc)
+
+
+@test
+def plan_slides_copy_the_deck_own_slides():
+    """The look comes from the deck's slides; the master page is only the fallback.
+
+    A slide keeps the box and the characters it was given, so the two disagree on
+    any deck somebody worked on: the deck this was measured on titles its slides in
+    **31 pt at y = 1474** where its master placeholder says **32 pt at y = 1500**,
+    and the generated heading came out a point larger than the deck's own and a few
+    tenths of a millimetre off, next to it.  Here the fixture's master is left
+    untouched and its content slides are moved instead: everything the plan slides
+    show has to follow the slides, and nothing of it may come from the master.
+
+    Two rules of that lookup are in this one test as well: the value the slides
+    *agree on* wins, so the one slide that was edited apart from the rest ("the odd
+    one out") does not move them; and the size is the one the template paints with,
+    which is the first paragraph's - the outline level - and not the shape's.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        master = core._master_page(doc, "")
+        master_title = core._title_shape(master)
+        assert master_title is not None, "the fixture's master has no title"
+        master_said = (master_title.Position.X, master_title.Position.Y,
+                       master_title.Size.Width, master_title.CharHeight)
+        moved = 0
+        pages = doc.DrawPages
+        for i in range(pages.Count):
+            page = pages.getByIndex(i)
+            if str(page.Name) == "welcome":         # the odd one out: outvoted
+                continue
+            title = core._title_shape(page)
+            if title is None:
+                continue
+            title.Position = core._point(3000, 900)
+            title.Size = core._size(20000, 1500)
+            title.CharFontName = "Liberation Serif"
+            title.CharHeight = 40.0                 # what the shape says ...
+            for paragraph in core._paragraphs_of(title):
+                paragraph.CharHeight = 27.5         # ... and what it paints with
+            moved += 1
+        assert moved >= 3, moved
+        odd = [pages.getByIndex(i) for i in range(pages.Count)
+               if str(pages.getByIndex(i).Name) == "questions"]
+        assert len(odd) == 1, "the fixture lost its odd one out"
+        core._title_shape(odd[0]).Position = core._point(9000, 7000)
+
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        pages = doc.DrawPages
+        by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
+                   for i in range(pages.Count)}
+        for name in [core.OVERVIEW_NAME] + [core.section_page_name(i)
+                                            for i in range(3)]:
+            title = core._title_shape(by_name[name])
+            assert title is not None, name
+            assert title.Position.X == 3000, (name, title.Position)
+            assert title.Size.Width == 20000, (name, title.Size)
+            # Impress fits a text shape's height to its content and grows it around
+            # the centre, so the box the template gives is a starting point here -
+            # a couple of tenths of a millimetre, not a different position
+            assert 700 < title.Position.Y < 1100, (name, title.Position)
+            assert 1100 < title.Size.Height < 1900, (name, title.Size)
+            assert title.CharHeight == 27.5, (name, title.CharHeight)
+            assert title.CharFontName == "Liberation Serif", (
+                name, title.CharFontName)
+        # and none of that came from the master, which still says something else
+        assert (master_title.Position.X, master_title.Position.Y,
+                master_title.Size.Width, master_title.CharHeight) == master_said
+        assert (3000, 900, 20000, 27.5) != master_said, master_said
     finally:
         lo.close(doc)
 
