@@ -341,8 +341,12 @@ class SettingsDialog(object):
         except Exception:
             pass
 
-    def run(self):
-        """Show the dialog modally; return the new settings, or ``None``."""
+    def _install_listeners(self):
+        """Attach the button and colour listeners to the peers.
+
+        Separate from ``run()`` so a test can fire a button event without having
+        to enter the modal loop.
+        """
         import unohelper
         from com.sun.star.awt import XActionListener, XTextListener
 
@@ -395,6 +399,17 @@ class SettingsDialog(object):
             watcher = ColourWatcher(field)
             control.addTextListener(watcher)
             self._listeners.append((control, watcher))
+
+    def run(self):
+        """Show the dialog modally; return the new settings, or ``None``."""
+        if self.dialog is None:
+            self.build()
+        self._peer()
+        try:
+            self.dialog.setTitle(TITLE)
+        except Exception:
+            pass
+        self._install_listeners()
         config.log(self.ctx, "settings dialog: %d controls, %dx%d units"
                    % (len(self.model.ElementNames), *self._asked_size()))
         try:

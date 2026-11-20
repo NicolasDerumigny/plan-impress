@@ -437,6 +437,44 @@ def plan_slides_leave_a_title_slide_without_section_alone():
 
 
 @test
+def dialog_ok_button_accepts_and_cancel_does_not():
+    """Pressing OK must not turn into a silent cancel.
+
+    The button listener used to work out *which* button fired from
+    ``event.Source.Model.Name``.  When that lookup failed, OK closed the dialog and
+    threw the values away with nothing in the log - the user saw a dialog that
+    refused to save.  Firing the installed listeners with an event that has no
+    usable source is what catches that.
+    """
+    from plan_impress import dialog
+    ctx = lo.connect()
+    window = dialog.SettingsDialog(ctx, dict(config.DEFAULTS, title="Agenda"),
+                                   ["Master1"])
+    window.build()
+    try:
+        window._peer()
+        window._install_listeners()
+        # _listeners is the record of what was attached to the peers: two buttons
+        # and one colour watcher per hex field.  (The peer proxy has no
+        # getActionListeners(), so this is the only way back to the real objects.)
+        listeners = {listener.name: listener
+                     for _control, listener in window._listeners
+                     if hasattr(listener, "name")}
+        assert set(listeners) == {"ok", "cancel"}, listeners
+        assert len(window._listeners) == 4, window._listeners
+        junk = object()              # no Source, no Model: the listener must not care
+        listeners["ok"].actionPerformed(junk)
+        assert window.accepted and not window.rejected, "OK did not accept the dialog"
+        listeners["cancel"].actionPerformed(junk)
+        assert window.rejected and not window.accepted, "Cancel did not reject"
+        # and the values that would have been saved are the ones on the controls
+        assert window.result() is not None
+        assert window.result()["title"] == "Agenda", window.result()
+    finally:
+        window.dispose()
+
+
+@test
 def insert_plan_without_sections():
     ctx = lo.connect()
     desk = lo.desktop(ctx)
