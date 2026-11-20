@@ -42,6 +42,9 @@ import uno
 #: re-run recognises (and regenerates) its own slides.
 PLAN_PREFIX = "PlanImpress:"
 OVERVIEW_NAME = "PlanImpress:Overview"
+#: The plan slide of a section is named after the section's number *in the deck*,
+#: so it counts from 1 like the slide numbers the user sees, not from 0 like the
+#: Python list :func:`insert_plan` walks.
 SECTION_NAME_TEMPLATE = "PlanImpress:Section=%d"
 
 _PROPERTY_VALUE = "com.sun.star.beans.PropertyValue"
@@ -449,8 +452,32 @@ def remove_plan_slides(doc):
 # slide content
 # --------------------------------------------------------------------------- #
 
+def _default_master(doc):
+    """The master the deck's own slides use - the template's content look.
+
+    ``MasterPages.getByIndex(0)`` is usually the *title* master, whose
+    placeholders are laid out for a cover slide, so basing the plan slides on it
+    produced a heading and a list that looked like nothing else in the deck.
+    """
+    counts = {}
+    pages = doc.DrawPages
+    for i in range(pages.Count):
+        try:
+            name = str(pages.getByIndex(i).MasterPage.Name)
+        except Exception:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    masters = doc.MasterPages
+    if counts:
+        wanted = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+        for i in range(masters.Count):
+            if masters.getByIndex(i).Name == wanted:
+                return masters.getByIndex(i)
+    return masters.getByIndex(0)
+
+
 def _master_page(doc, wanted):
-    """The master slide to base plan slides on: by name, else the first one."""
+    """The master slide to base plan slides on: by name, else the deck's own."""
     masters = doc.MasterPages
     if not masters.Count:
         raise PlanError("This presentation has no master slides.")
@@ -459,7 +486,7 @@ def _master_page(doc, wanted):
             if masters.getByIndex(i).Name == wanted:
                 return masters.getByIndex(i)
         raise PlanError("Master slide '%s' no longer exists." % wanted)
-    return masters.getByIndex(0)
+    return _default_master(doc)
 
 
 def _text_shapes(page):
@@ -472,6 +499,14 @@ def _text_shapes(page):
         except Exception:
             continue
     return out
+
+
+def _paragraphs_of(shape):
+    """The paragraphs of a text shape, as a list."""
+    try:
+        return list(shape.createEnumeration())
+    except Exception:
+        return []
 
 
 def _is_title(shape):
@@ -495,9 +530,43 @@ def _title_shape(master):
     return None
 
 
+#: What the content placeholder of a master or layout answers to, best first.
+#: ``CustomShape`` and plain ``TextShape`` are deliberately *not* in here: a
+#: master drawn by a designer usually has a full-page background ``CustomShape``
+#: that supports text, and picking that as "the content area" put the list at
+#: the left edge of the slide in the template's small-text style.
+CONTENT_SERVICES = (
+    "com.sun.star.presentation.SubtitleTextShape",
+    "com.sun.star.presentation.OutlinerShape",
+)
+
+
+def _is_content(shape):
+    """True for the shape a master uses for the body text of its slides."""
+    if _is_title(shape):
+        return False
+    for service in CONTENT_SERVICES:
+        try:
+            if shape.supportsService(service):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _body_shape(page):
-    """The content placeholder: the biggest text shape that is not the title."""
-    candidates = [s for s in _text_shapes(page) if not _is_title(s)]
+    """The content placeholder of ``page``: the box the deck's own text goes in.
+
+    The placeholder is asked, not measured - the biggest text shape on a master
+    is usually its full-page background shape, which supports text and would win
+    any size contest.  Only a master that uses no presentation placeholder at all
+    falls back to the largest text shape.
+    """
+    shapes = _text_shapes(page)
+    for shape in shapes:
+        if _is_content(shape):
+            return shape
+    candidates = [s for s in shapes if not _is_title(s)]
     if not candidates:
         return None
     try:
@@ -590,30 +659,303 @@ def _create_text_shape(doc, page, services):
     raise PlanError("Could not create a text shape on the slide.")
 
 
-def _make_text_shape(doc, page, services, text, x, y, width, height,
-                     char_height, bold=False):
-    shape = _create_text_shape(doc, page, services)
+def _ensure_placeholder(doc, page, services, wanted):
+    """The page's placeholder ``wanted``, created when the layout has none.
+
+    ``page.Layout`` does not always bring the placeholders with it (measured on a
+    freshly inserted page), so they are reused when they are there and created
+    when they are not; creating one that the layout has already added would put
+    two lists on the slide.
+    """
+    for shape in _text_shapes(page):
+        try:
+            if wanted(shape):
+                return shape
+        except Exception:
+            continue
+    return _create_text_shape(doc, page, services)
+
+
+def _make_text_shape(doc, page, services, wanted, text, x, y, width, height,
+                     char_height, bold=False, char_color=None, mirror=None):
+    shape = _ensure_placeholder(doc, page, services, wanted)
+    # before anything else: what the template says wins, and the properties set
+    # below are the deliberate exceptions to it
+    copied = _mirror_characters(mirror, shape)
     shape.Size = _size(width, height)
     shape.Position = _point(x, y)
     shape.setString(text)
+    # and the paragraphs of it: a paragraph of a new outline placeholder takes its
+    # characters from the *page style's* outline level - bold 150 in the default
+    # template - which overrides whatever the shape says, so the master's
+    # placeholder has to be mirrored down to them as well
+    for paragraph in _paragraphs_of(shape):
+        _mirror_characters(mirror, paragraph, PARAGRAPH_ATTRIBUTES)
     try:
         shape.CharHeight = float(char_height)
     except Exception:
         pass
-    # Presentation placeholders anchor their text in the middle of the box by
-    # default, which would float a one-line heading into the body area.
-    for name, value in (("TextAnchor", 0),        # com.sun.star.awt.TextAnchor.TOP
-                        ("TextAnchorKind", 1)):   # ...drawing.TextAnchorKind.TOP
+    if char_color is not None:
+        # the base colour of everything in the box, including the list numbers
         try:
-            shape.setPropertyValue(name, value)
+            shape.CharColor = int(char_color)
         except Exception:
             pass
+    # A shape with nothing to inherit from has to be told: presentation
+    # placeholders anchor their text in the middle of the box, which would float a
+    # one-line heading into the body area.  When the master's placeholder carried
+    # its own anchoring, that is the template's and is left alone.
+    if "TextVerticalAdjust" not in copied:
+        for name, value in (("TextAnchor", 0),      # com.sun.star.awt.TextAnchor.TOP
+                            ("TextAnchorKind", 1)):  # ...drawing.TextAnchorKind.TOP
+            try:
+                shape.setPropertyValue(name, value)
+            except Exception:
+                pass
     if bold:
         try:
             shape.CharWeight = _FONT_BOLD
         except Exception:
             pass
     return shape
+
+
+def section_page_name(index):
+    """The name of the plan slide that belongs to section ``index`` (from 0)."""
+    return SECTION_NAME_TEMPLATE % (index + 1)
+
+
+def _numbering_rules(shape):
+    """The list style of a master placeholder, or ``None`` when it has none."""
+    if shape is None:
+        return None
+    try:
+        return shape.NumberingRules
+    except Exception:
+        return None
+
+
+def _level_value(rules, name, default=None):
+    """One property of the first list level, or ``default``."""
+    if rules is None:
+        return default
+    try:
+        for entry in rules.getByIndex(0):
+            if entry.Name == name:
+                return entry.Value
+    except Exception:
+        pass
+    return default
+
+
+def _numbering_type_arabic():
+    """``NumberingType.ARABIC``, taken from the constants when they are loaded.
+
+    The value is 4 in this LibreOffice (``dir(NumberingType)`` lists it); 1 is
+    ``CHARS_LOWER_LETTER``, which is what the list rendered the first time the
+    label was guessed at.  It has to be an ``int``: a string is stored as 0,
+    which draws no number at all and leaves only the literal prefix behind.
+    """
+    try:
+        from com.sun.star.style import NumberingType
+        return int(NumberingType.ARABIC)
+    except Exception:
+        return 4
+
+
+#: Character *and* text-box attributes copied from the master's placeholder onto
+#: the shape this extension adds.  A shape made with ``createInstance()`` gets the
+#: page style's characters and its own text-box settings instead: the heading came
+#: out in the master's cover title font, at a point size of its own, vertically
+#: centred in a box that auto-grew - which is what made a generated slide look
+#: re-created rather than edited (``dev/debug_numbering.py``, variant "no mirror").
+CHAR_ATTRIBUTES = ("CharFontName", "CharStyleName", "CharHeight", "CharWeight",
+                   "CharPosture", "CharKerning", "CharCaseMap", "CharColor",
+                   "CharUnderline", "CharStrikeout", "CharRelief", "CharShadowed",
+                   "ParaAdjust", "ParaLeftMargin", "ParaRightMargin",
+                   "ParaFirstLineIndent", "ParaTopMargin", "ParaBottomMargin",
+                   "ParaLineSpacing", "TextAutoGrowHeight", "TextAutoGrowWidth",
+                   "TextContourFrame", "TextVerticalAdjust", "TextLeftDistance",
+                   "TextRightDistance")
+
+
+#: The part of ``CHAR_ATTRIBUTES`` that belongs on a *paragraph* (``CharStyleName``
+#: is a shape property, a paragraph has ``CharFontStyleName`` instead).
+#: ``CharHeight`` and ``CharColor`` are deliberately left out: the point size is the
+#: one the list was fitted to and the colour is what tells the current section from
+#: the others.
+PARAGRAPH_ATTRIBUTES = ("CharFontName", "CharWeight", "CharPosture",
+                        "CharKerning", "CharCaseMap", "CharUnderline",
+                        "CharStrikeout", "CharRelief", "CharShadowed")
+
+
+def _mirror_characters(source, target, names=CHAR_ATTRIBUTES):
+    """Copy the template's character look onto one of our shapes.
+
+    Returns the names that actually came over; the caller does not have to guess
+    about a property the master never answered for.
+    """
+    copied = set()
+    if source is None or target is None:
+        return copied
+    for name in names:
+        try:
+            value = source.getPropertyValue(name)
+        except Exception:
+            continue
+        try:
+            target.setPropertyValue(name, value)
+            copied.add(name)
+        except Exception:
+            pass
+    return copied
+
+
+def _copy_numbering(doc, template_rules):
+    """A rules object carrying the master's list style (all ten levels)."""
+    rules = doc.createInstance("com.sun.star.text.NumberingRules")
+    if template_rules is not None:
+        try:
+            for index in range(min(rules.Count, template_rules.Count)):
+                rules.replaceByIndex(index, uno.Any(
+                    "[]%s" % _PROPERTY_VALUE,
+                    tuple(list(template_rules.getByIndex(index)))))
+        except Exception:
+            pass
+    return rules
+
+
+def _patch_level(rules, overrides):
+    """Change single properties of the first level; everything else is kept.
+
+    The level has to go back as one typed sequence (a plain tuple is refused),
+    and only the properties named in ``overrides`` are touched, so what the
+    template says about the bullet font, its size and the indentation survives.
+    """
+    level = list(rules.getByIndex(0))
+    seen = set()
+    for entry in level:
+        if entry.Name in overrides:
+            entry.Value = overrides[entry.Name]
+            seen.add(entry.Name)
+    for name in sorted(overrides):
+        if name not in seen:
+            entry = uno.createUnoStruct(_PROPERTY_VALUE)
+            entry.Name, entry.Value = name, overrides[name]
+            level.append(entry)
+    rules.replaceByIndex(0, uno.Any("[]%s" % _PROPERTY_VALUE, tuple(level)))
+    return rules
+
+
+#: ``NumberingType`` values whose label is a *character* the template chose
+#: (``CHAR_SPECIAL`` and ``BITMAP``).  Their ``BulletRelSize`` sizes that glyph.
+CHARACTER_LABELS = (6, 8)
+
+
+def _number_list(doc, shape, template_rules=None, bullet_colors=None):
+    """Draw the paragraphs of ``shape`` as the master's first list level.
+
+    The master's own level is copied and **only** ``NumberingType`` is replaced,
+    so the number comes in the template's bullet font, with its indentation, its
+    ``Prefix``/``Suffix``, its tab stops and its label colour: measured in
+    ``dev/debug_numbering.py``, a rules object built from scratch gave the digits
+    a font, a size, a gap and a colour of their own, which is what made the list
+    look foreign on the slide.  Three things about these rules are measured there
+    as well: ``NumberingType`` has to be the integer of ``NumberingType.ARABIC``
+    (a value pyuno marshals from a string arrives as 0, i.e. no number at all,
+    and ``1`` is ``CHARS_LOWER_LETTER``, which is the "a. b. c." the first attempt
+    rendered), a level is written back as one typed sequence, and ``Prefix`` is
+    literal text (asking for ``"%1."`` prints ``%1.``).
+
+    The one property that cannot be inherited is how the label is *sized and
+    placed*: a level that draws a special character sizes that glyph (the fixture's
+    master asks for 45 % of the text height, which makes an unreadable digit) and
+    pulls it into the margin with a ``FirstLineOffset`` tuned for it, which leaves a
+    digit glued to the text ("1Introduction", ``dev/debug_numbering.py``).  The size
+    is re-asked for - never smaller than the text it numbers - and the label is given
+    a column of its own at the level's ``LeftMargin``.  That column has to be asked
+    for on the *paragraph*: two slides whose level read exactly the same
+    (``LeftMargin`` 1200, ``FirstLineOffset`` -1200) rendered with and without a gap,
+    and what separated them was the paragraph's ``ParaLeftMargin`` /
+    ``ParaFirstLineIndent`` - the level's margins alone are only what the template's
+    own bullets need.  ``SymbolTextDistance`` cannot be used for the gap either:
+    writes to it are ignored, it mirrors ``FirstLineOffset``.
+
+    ``bullet_colors`` optionally gives one colour per paragraph.  The label is
+    painted with the level's ``BulletColor`` - which the template sets to its own
+    accent colour, so one copy of the rules per paragraph differing in that one
+    property is what dims the numbers of the sections that are not the current
+    one.  Different rules objects per paragraph do not restart the count: the
+    list still runs 1, 2, 3 (``dev/debug_numbering.py``).
+
+    Returns whether the label could be installed; without it the list is still
+    readable, just unnumbered.
+    """
+    overrides = {"NumberingType": _numbering_type_arabic()}
+    try:
+        left = int(_level_value(template_rules, "LeftMargin", 0))
+        offset = int(_level_value(template_rules, "FirstLineOffset", 0))
+    except (TypeError, ValueError):
+        left = offset = 0
+    if _level_value(template_rules, "NumberingType") in CHARACTER_LABELS:
+        # the relative size describes the character the template draws, and the
+        # 45 % of the text height that makes a small dot makes an unreadable
+        # digit: a number is text, so it is never smaller than the text it numbers
+        inherited = _level_value(template_rules, "BulletRelSize", 100)
+        try:
+            overrides["BulletRelSize"] = max(int(inherited), 100)
+        except (TypeError, ValueError):
+            pass
+        # and the negative first-line offset that pulls that character into the
+        # margin leaves a digit glued to the text, so the label goes to the left
+        # edge of the block instead and the text keeps its indent
+        if left > 0 and offset > -left:
+            overrides["FirstLineOffset"] = -left
+            offset = -left
+    try:
+        shape.NumberingRules = _patch_level(_copy_numbering(doc, template_rules),
+                                            overrides)
+    except Exception:
+        return False
+    paragraphs = _paragraphs_of(shape)
+    if not paragraphs:
+        return False
+    if bullet_colors:
+        for index, paragraph in enumerate(paragraphs):
+            color = bullet_colors[index] if index < len(bullet_colors) \
+                else bullet_colors[-1]
+            if color is None:
+                continue
+            try:
+                copy = _copy_numbering(doc, template_rules)
+                _patch_level(copy, dict(overrides, BulletColor=int(color)))
+                paragraph.NumberingRules = copy
+            except Exception:
+                pass
+    numbered = 0
+    for paragraph in paragraphs:
+        # The label's column has to be asked for on the paragraph as well: two
+        # slides whose level read identically (LeftMargin 1200, FirstLineOffset
+        # -1200) rendered with and without a gap between the number and the text,
+        # and what separated them was the paragraph's own ParaLeftMargin /
+        # ParaFirstLineIndent (the "core" and "core, no paragraph indent" slides of
+        # dev/debug_numbering.py).  The level's margins alone are what the
+        # template's own bullets need, not what a digit needs.
+        try:
+            if left > 0:
+                if int(paragraph.ParaLeftMargin or 0) < left:
+                    paragraph.ParaLeftMargin = left
+                if int(paragraph.ParaFirstLineIndent or 0) > -left:
+                    paragraph.ParaFirstLineIndent = -left
+        except Exception:
+            pass
+        try:
+            paragraph.NumberingLevel = 0
+            paragraph.NumberingIsNumber = True
+            numbered += 1
+        except Exception:
+            pass
+    return numbered > 0
 
 
 def _paint_paragraphs(shape, colors):
@@ -891,21 +1233,39 @@ def apply_footer(doc, page, source_page=None):
     return done
 
 
+#: ``com.sun.star.presentation.PageLayout.OutlineText``: the title-plus-content
+#: layout, i.e. the one whose boxes the master slide actually styles.
+_LAYOUT_OUTLINE = 2
+
+
 def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     """Fill ``page`` with the heading plus every section name.
 
     ``current`` is the index of the highlighted section, or ``None`` for the
     overview slide, where all names are drawn in the highlight colour.
 
-    Position and size come from the master's own placeholders where they are
-    usable, and the body is additionally sized so the whole list fits between
-    the heading and the bottom of the slide.  ``footer`` is the slide to take the
-    footer band from (see :func:`apply_footer`); it is looked up once per
-    ``insert_plan`` and found here otherwise.
+    The heading and the list go into the master's own placeholders, so they get
+    the template's position, font, colour and list indentation: the layout is
+    chosen *before* the shapes exist, the rectangles come from the master where
+    they fit on the page, and the point size comes from the master's placeholder
+    (shrunk only when the list would not fit under the heading).  Overview and
+    plan slides run through this one function with the same section list, which
+    is what keeps their size and colours equal; what differs is only which
+    paragraph is highlighted.
+
+    ``footer`` is the slide to take the footer band from (see
+    :func:`apply_footer`); it is looked up once per ``insert_plan`` and found
+    here otherwise.
     """
     master = _master_page(doc, settings.get("master", ""))
     page.MasterPage = master
     _clear_page(page)
+    # before adding anything: afterwards the page keeps the rectangles it already
+    # gave the shapes and stays on its old layout (measured: still 20)
+    try:
+        page.Layout = _LAYOUT_OUTLINE
+    except Exception:
+        pass
     apply_footer(doc, page, footer)
 
     if not section_names:
@@ -919,8 +1279,10 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     tx, ty, tw, th = _rect(master_title, (width * 0.08, height * 0.05),
                            (width * 0.84, height * 0.16), width, height)
     title_pt = _master_char_height(master_title, _TITLE_PT)
-    _make_text_shape(doc, page, TITLE_SERVICES, settings.get("title") or "Plan",
-                     tx, ty, tw, th, char_height=title_pt, bold=True)
+    _make_text_shape(doc, page, TITLE_SERVICES, _is_title,
+                     settings.get("title") or "Plan",
+                     tx, ty, tw, th, char_height=title_pt,
+                     bold=master_title is None, mirror=master_title)
 
     master_body = _body_shape(master)
     bx, by, bw, bh = _rect(master_body, (width * 0.10, height * 0.24),
@@ -932,14 +1294,33 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
         bh = max(int(height * 0.2), height - by - int(height * 0.05))
     body_pt = _fit_point_size(_master_char_height(master_body, _BODY_PT),
                               bh, len(section_names))
-    body = _make_text_shape(doc, page, BODY_SERVICES, "\n".join(section_names),
-                            bx, by, bw, bh, char_height=body_pt)
+    body = _make_text_shape(doc, page, BODY_SERVICES, _is_content,
+                            "\n".join(section_names), bx, by, bw, bh,
+                            char_height=body_pt, char_color=highlight,
+                            mirror=master_body)
+
     if current is None:
         # the overview: nothing is "current", so nothing is dimmed
         colors = [highlight] * len(section_names)
     else:
         colors = [highlight if i == current else muted
                   for i in range(len(section_names))]
+    # the number is painted with the level's BulletColor, so a dimmed section has
+    # to dim its number separately; the current one keeps the colour the template
+    # chose for its bullets (and a template that fixes none follows the text)
+    template_bullet = _level_value(_numbering_rules(master_body), "BulletColor")
+    try:
+        template_bullet = int(template_bullet)
+    except (TypeError, ValueError):
+        template_bullet = -1
+    if template_bullet < 0:
+        template_bullet = highlight
+    bullets = [template_bullet if color == highlight else muted
+               for color in colors]
+    # the master's own first list level, only numbered, painted per row
+    _number_list(doc, body, _numbering_rules(master_body), bullets)
+    # last: the paragraph colour is what the text is drawn in, and with a level
+    # that fixes no bullet colour it is what the number follows as well
     _paint_paragraphs(body, colors)
     return page
 
@@ -1023,7 +1404,7 @@ def insert_plan(doc, settings, ctx=None):
     targets = [section["start"] for section in sections]
     inserted = 0
     for position in range(len(sections) - 1, -1, -1):
-        insert_page_at(doc, targets[position], SECTION_NAME_TEMPLATE % position, ctx)
+        insert_page_at(doc, targets[position], section_page_name(position), ctx)
         inserted += 1
 
     # The overview sits above everything, i.e. before the plan slide of the
@@ -1038,7 +1419,7 @@ def insert_plan(doc, settings, ctx=None):
     by_name = {pages.getByIndex(i).Name: pages.getByIndex(i) for i in range(pages.Count)}
     build_plan_slide(doc, by_name[OVERVIEW_NAME], names, None, settings, footer)
     for position, section in enumerate(sections):
-        page = by_name.get(SECTION_NAME_TEMPLATE % position)
+        page = by_name.get(section_page_name(position))
         if page is None:
             raise PlanError("Internal error: plan slide for section '%s' is missing."
                             % names[position])

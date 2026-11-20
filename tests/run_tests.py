@@ -30,6 +30,8 @@ from plan_impress import config, core  # noqa: E402
 
 FIXTURE = os.path.join(HERE, "fixtures", "sections.odp")
 NO_FOOTER_FIXTURE = os.path.join(HERE, "fixtures", "sections_no_footer.odp")
+#: The section titles the fixture carries, in deck order (`make_fixture.py`).
+SECTION_NAMES = ["Introduction", "Architecture", "Demo"]
 SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
 #: what ``tests/make_fixture.py`` writes into the footer of every slide
 FOOTER_TEXT = "Quarterly Review 2026"
@@ -302,11 +304,11 @@ def insert_plan_layout():
 
         names = core.page_names(doc)
         assert names[0] == core.OVERVIEW_NAME, names
-        assert names[1] == "PlanImpress:Section=0", names
+        assert names[1] == "PlanImpress:Section=1", names
         assert names[2] == "welcome", names
         assert names.count(core.OVERVIEW_NAME) == 1
         for index in range(3):
-            assert ("PlanImpress:Section=%d" % index) in names, names
+            assert core.section_page_name(index) in names, names
         # one plan slide per section, at the top of it
         sections = core.get_sections(doc)
         assert len(sections) == 3, sections
@@ -316,7 +318,7 @@ def insert_plan_layout():
         assert [section["indexes"] for section in sections] == \
             [[1, 2, 3], [4, 5, 6, 7], [8, 9, 10]], sections
         for index, section in enumerate(sections):
-            assert section["slides"][0] == "PlanImpress:Section=%d" % index, section
+            assert section["slides"][0] == core.section_page_name(index), section
             assert section["start"] == names.index(section["slides"][0]), section
         # the overview is not part of any section
         assert core.OVERVIEW_NAME not in [
@@ -329,7 +331,7 @@ def insert_plan_layout():
         by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
                    for i in range(pages.Count)}
         for index in range(3):
-            page = by_name["PlanImpress:Section=%d" % index]
+            page = by_name[core.section_page_name(index)]
             body = core._body_shape(page)
             assert body is not None, "no body shape on section plan slide"
             colors = _paragraph_colors(body)
@@ -584,6 +586,155 @@ def plan_slides_carry_the_decks_footer():
         lo.close(doc)
 
 
+def _paragraphs(shape):
+    out = []
+    enum = shape.createEnumeration()
+    while enum.hasMoreElements():
+        out.append(enum.nextElement())
+    return out
+
+
+def _level(rules, index=0):
+    """The properties of one list level of a ``NumberingRules`` object."""
+    if rules is None:
+        return {}
+    return dict((entry.Name, entry.Value) for entry in rules.getByIndex(index))
+
+
+@test
+def plan_slides_use_the_template_placeholders():
+    """Heading and list are the master's own placeholders, and the list is numbered.
+
+    Four separate things, none of which a plain text shape at a computed rectangle
+    got right: the boxes come from the master (the list used to hug the left edge
+    in a font of its own), the page is on the title-plus-content layout - *set
+    before* the shapes exist, or Impress keeps the boxes it already gave them -,
+    the sections are the master's own first list level with only the label turned
+    into a number, and a dimmed row dims its number with it, which per-paragraph
+    colours alone do not do because the label is painted with the level's
+    ``BulletColor``.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        settings = dict(config.DEFAULTS)
+        settings.update({"text_color": 0x102030, "muted_color": 0xCBCBCB})
+        core.insert_plan(doc, settings, ctx)
+        master = core._master_page(doc, "")
+        master_title, master_body = core._title_shape(master), core._body_shape(master)
+        assert master_body is not None, "the fixture's master has no content placeholder"
+        pages = doc.DrawPages
+        by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
+                   for i in range(pages.Count)}
+        basis = None
+        for name in [core.OVERVIEW_NAME] + [core.section_page_name(i)
+                                            for i in range(3)]:
+            page = by_name[name]
+            assert page.Layout == core._LAYOUT_OUTLINE, (name, page.Layout)
+            title, body = core._title_shape(page), core._body_shape(page)
+            assert title is not None and body is not None, name
+            assert core._is_content(body), (name, body.ShapeType)
+            assert (body.Position.X, body.Size.Width) == \
+                (master_body.Position.X, master_body.Size.Width), (
+                    name, body.Position, body.Size,
+                    master_body.Position, master_body.Size)
+            wanted = core._rect(master_title, (page.Width * 0.08, page.Height * 0.05),
+                                (page.Width * 0.84, page.Height * 0.16),
+                                page.Width, page.Height)
+            assert (title.Position.X, title.Size.Width) == (wanted[0], wanted[2]), (
+                name, title.Position, title.Size, wanted)
+
+            # the list style is the master's own, with only the label replaced:
+            # the template's bullet font, size, indentation and label colour are
+            # what makes the number look like it belongs on the slide
+            rules = dict((p.Name, p.Value)
+                         for p in body.NumberingRules.getByIndex(0))
+            master_level = _level(core._numbering_rules(master_body))
+            assert rules["NumberingType"] == core._numbering_type_arabic(), (
+                name, rules)
+            for attribute in ("Prefix", "Suffix", "BulletFont", "LeftMargin",
+                              "StartWith", "Adjust"):
+                assert rules.get(attribute) == master_level.get(attribute), (
+                    name, attribute, rules.get(attribute), master_level.get(attribute))
+            # the two properties that are *not* inherited when the template draws
+            # a character: it sizes that glyph (45 % of the text height here) and
+            # pulls it into the margin, which makes an unreadable digit glued to
+            # the text - a number is text, so never smaller than it, and it gets
+            # the block's own left edge as its column.  SymbolTextDistance cannot
+            # be set on its own (writes are ignored) and follows FirstLineOffset.
+            if master_level.get("NumberingType") in core.CHARACTER_LABELS:
+                assert rules.get("BulletRelSize") == max(
+                    int(master_level.get("BulletRelSize") or 100), 100), (
+                    name, rules.get("BulletRelSize"))
+                assert rules.get("FirstLineOffset") == -rules.get("LeftMargin"), (
+                    name, rules.get("FirstLineOffset"), rules.get("LeftMargin"))
+            else:
+                for attribute in ("BulletRelSize", "FirstLineOffset",
+                                  "SymbolTextDistance"):
+                    assert rules.get(attribute) == master_level.get(attribute), (
+                        name, attribute)
+            paragraphs = _paragraphs(body)
+            assert [para.NumberingIsNumber for para in paragraphs] == [True] * 3, name
+            assert [para.NumberingLevel for para in paragraphs] == [0] * 3, name
+            for paragraph in paragraphs:
+                # the number has a column of its own: the label hangs into the
+                # margin by the level's own indent, asked for on the paragraph,
+                # which is what keeps the digit off the text
+                assert paragraph.ParaLeftMargin >= rules["LeftMargin"], (
+                    name, paragraph.ParaLeftMargin)
+                assert paragraph.ParaFirstLineIndent <= -rules["LeftMargin"], (
+                    name, paragraph.ParaFirstLineIndent)
+                # and the characters of the *paragraph* too: one of a new outline
+                # placeholder otherwise takes them from the page style's outline
+                # level, which is a bold of its own in the default template
+                for attribute in core.PARAGRAPH_ATTRIBUTES:
+                    assert getattr(paragraph, attribute) == \
+                        getattr(master_body, attribute), (
+                        name, attribute, getattr(paragraph, attribute),
+                        getattr(master_body, attribute))
+            # the label is drawn by the numbering, it is not in the text: copying a
+            # section name out of the slide has to give back the plain name
+            assert [para.getString() for para in paragraphs] == SECTION_NAMES, (
+                name, [para.getString() for para in paragraphs])
+            # the characters are the master's too - a shape built with
+            # createInstance() would come in the page style's font instead
+            for attribute in ("CharFontName", "CharHeight", "CharWeight"):
+                assert getattr(body, attribute) == getattr(master_body, attribute), (
+                    name, attribute, getattr(body, attribute),
+                    getattr(master_body, attribute))
+                assert getattr(title, attribute) == getattr(master_title, attribute), (
+                    name, attribute, getattr(title, attribute),
+                    getattr(master_title, attribute))
+
+            # one size and one base colour for the overview and the plan slides;
+            # only which paragraph is highlighted differs between them
+            if basis is None:
+                basis = (body.CharHeight, body.CharColor)
+            assert (body.CharHeight, body.CharColor) == basis, (name, basis)
+            assert body.CharColor == 0x102030, name
+        # a dimmed section dims its number too.  The label is painted with the
+        # level's BulletColor - which the template sets to its own accent colour -
+        # so a dimmed paragraph carries its own copy of the rules with that one
+        # property changed; the current one keeps the template's colour.  (That
+        # the list still counts 1, 2, 3 across the three rule objects is what the
+        # rendered slide in dev/debug_numbering.py has to show.)
+        colors = _paragraph_colors(core._body_shape(by_name[core.section_page_name(1)]))
+        assert colors == [0xCBCBCB, 0x102030, 0xCBCBCB], colors
+        body = core._body_shape(by_name[core.section_page_name(1)])
+        master_bullet = core._level_value(core._numbering_rules(master_body),
+                                          "BulletColor")
+        # a template that fixes no bullet colour (-1 = "follow the character
+        # colour") gets the highlight colour on the current row instead
+        current_bullet = master_bullet if isinstance(master_bullet, int) \
+            and master_bullet >= 0 else 0x102030
+        labels = [core._level_value(para.NumberingRules, "BulletColor")
+                  for para in _paragraphs(body)]
+        assert labels == [0xCBCBCB, current_bullet, 0xCBCBCB], (labels, master_bullet)
+    finally:
+        lo.close(doc)
+
+
 @test
 def plan_slides_mirror_the_decks_footer_shapes():
     """A deck that carries its footer frames on every slide gets them copied too.
@@ -677,9 +828,16 @@ def plan_slides_do_not_invent_a_footer():
             state = core._footer_state(page)
             assert not str(state.get("FooterText") or "").strip(), (page.Name, state)
         texts = _pdf_page_texts(doc, "no-footer")
+        # What a slide of this deck is allowed to print at all: the heading and the
+        # numbered list, with nothing in the bottom band.  "no digits anywhere" was
+        # the first version of this check, and the template's own list numbers broke
+        # it - the 1, 2, 3 belong to the list, not to a page number - so the lines
+        # are compared instead: a date, a footer text or a page number would add one.
+        wanted = ["Plan"] + ["%d %s" % (number, name)
+                             for number, name in enumerate(SECTION_NAMES, 1)]
         for index, page in _plan_pages(doc):
-            # no footer text, no date, no page number: no digits at all
-            assert not re.search(r"\d", texts[index]), (page.Name, texts[index])
+            lines = [line.strip() for line in texts[index].splitlines() if line.strip()]
+            assert lines == wanted, (page.Name, lines, wanted)
     finally:
         lo.close(doc)
 
@@ -785,7 +943,7 @@ def plan_slides_leave_a_title_slide_without_section_alone():
         names = core.page_names(doc)
         assert names[0] == "title", names
         assert names[1] == core.OVERVIEW_NAME, names
-        assert names[2] == "PlanImpress:Section=0", names
+        assert names[2] == "PlanImpress:Section=1", names
         assert names[3] == "welcome", names
         assert names[-1] == "questions", names
         assert report["inserted"] == 3, report          # 2 sections + the overview
@@ -1015,7 +1173,7 @@ def settings_job_saves():
             pages = doc.DrawPages
             by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
                        for i in range(pages.Count)}
-            body = core._body_shape(by_name["PlanImpress:Section=2"])
+            body = core._body_shape(by_name[core.section_page_name(2)])
             colors = _paragraph_colors(body)
             # the saved colours are what ended up on the slide: the third
             # section is the current one on this plan slide

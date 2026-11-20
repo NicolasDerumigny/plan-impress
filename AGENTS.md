@@ -211,7 +211,9 @@ reproducible with a script in `dev/`.
     always the one you read back — check the rendered result, not the property.
 22. Presentation placeholders **anchor their text in the middle of the box**, so
     a one-line heading floats down into the body; `_make_text_shape` sets
-    `TextAnchor` (awt `TOP` = 0) and `TextAnchorKind` (drawing `TOP` = 1).
+    `TextAnchor` (awt `TOP` = 0) and `TextAnchorKind` (drawing `TOP` = 1) — but
+    only when `TextVerticalAdjust` could not be mirrored from the master: with it
+    mirrored, the master's own anchoring is the template's and has to survive.
 23. Per-paragraph colour is set on the paragraphs of `createEnumeration()`
     (`_paint_paragraphs`), and a plain-text shape created with `setString()`
     treats `\n` as a paragraph break.
@@ -340,6 +342,56 @@ reproducible with a script in `dev/`.
     something, or `None`; `insert_plan` looks it up once and passes the same slide
     to every `build_plan_slide`, so all plan slides agree with each other.
 
+### The template's own look (`core.py`)
+
+A generated slide has to look like the deck's own slides were *edited*. Everything
+below was measured with `dev/debug_numbering.py` (one PDF, a slide per variant) on
+LibreOffice 26.8.
+
+44. **Inherit the master's list level and write only `NumberingType`.** Copy all
+    ten levels of the master content placeholder's `NumberingRules` and patch the
+    first one: a rules object built from scratch gives the digits a font, a size, a
+    gap and a colour of their own, and they look pasted onto the slide.
+    `NumberingType` has to be the **integer** of `NumberingType.ARABIC` (`4`) — `1`
+    is `CHARS_LOWER_LETTER`, which is the "a. b. c." the first attempt rendered, and
+    a value pyuno marshals from a string arrives as 0, i.e. no label at all — and
+    the level goes back as `uno.Any("[]com.sun.star.beans.PropertyValue",
+    tuple(level))`. `Prefix` and `Suffix` are literal text: `"%1."` prints `%1.`.
+45. **The properties that describe the glyph have to be re-asked for.**
+    `BulletRelSize` sizes the *character* the template draws — the fixture's master
+    asks for 45 % of the text height, which is an unreadable digit — so when the
+    label is a special character (`NumberingType` 6 or 8) it becomes
+    `max(inherited, 100)`. The label's column likewise: two slides whose level read
+    exactly the same (`LeftMargin` 1200, `FirstLineOffset` -1200) rendered with and
+    without a gap, and what separated them was the **paragraph's**
+    `ParaLeftMargin`/`ParaFirstLineIndent`, so those are set from the level's indent
+    or the digit sits on the text (`1Introduction`). `SymbolTextDistance` is no
+    help: writes to it are ignored and it mirrors `FirstLineOffset`.
+46. **Dim a row's number with a rules object of its own.** The label is painted with
+    the level's `BulletColor`, so one copy of the rules per paragraph differing in
+    that one property dims the sections that are not the current one — and the list
+    still counts 1, 2, 3 across the different rule objects. The `Bullet*` properties
+    of a *paragraph* are refused outright (`BulletColor`, `BulletChar`,
+    `BulletNumberingType`, `BulletRelSize` all raise), which is why the rules have to
+    be copied. A template that fixes no bullet colour (`-1` = follow the text) gets
+    the highlight colour on the current row.
+47. **Mirror the master placeholder's characters onto the shape *and* onto its
+    paragraphs.** A shape from `createInstance()` comes in the page style's font, and
+    a *paragraph* of an outline placeholder comes in the page style's outline level —
+    `CharWeight` 150 where the master's own placeholder says 100, so the list
+    rendered bold next to the deck's own slides. `core.CHAR_ATTRIBUTES` is the
+    shape's list, `core.PARAGRAPH_ATTRIBUTES` the paragraph's (no `CharStyleName`,
+    which a paragraph does not have; no `CharHeight`/`CharColor`, which are ours).
+48. **Setting `page.Layout` creates the placeholders.** `page.Layout = 2` on a fresh
+    page hands back a `TitleTextShape` and an `OutlinerShape` of its own, so adding
+    shapes without looking for them yields four; `_ensure_placeholder()` reuses what
+    is there. No dispatch route does it better: `.uno:AssignLayout?Layout:short=2`,
+    `.uno:AppendPage` and `.uno:InsertPage` are measured no-ops. The layout is
+    therefore the *first* thing `build_plan_slide` does after clearing the page, and
+    `apply_footer()` runs right after it: assigning a layout re-deals the
+    placeholders, so a footer frame mirrored onto the page before it is at the mercy
+    of that step.
+
 ## Testing notes
 
 `tests/run_tests.py` has no framework: `@test` collects functions, a `Skip`
@@ -357,8 +409,12 @@ control model with a native peer and read-back values, the inserted layout
 sections), a deck whose first slide belongs to no section, readable font sizes
 with nothing drawn off the slide, the footer (copied from the deck's own slides
 and rendered, frames mirrored onto a deck that carries them, and no footer
-invented in a deck that has none), idempotency and clean removal, the
-master-slide setting, `Addons.xcu` registration read back through the
+invented in a deck that has none), the template's own look
+(`plan_slides_use_the_template_placeholders`: the master's placeholders and their
+rectangles, the inherited list level with only the label replaced, the characters
+mirrored down to the paragraphs, the number of a dimmed row dimmed with it),
+idempotency and clean removal, the master-slide setting, `Addons.xcu` registration
+read back through the
 configuration provider, and the `service:` URL dispatch path a menu click takes.
 
 Things that are easy to break and are covered: re-running `insert_plan` must
