@@ -18,12 +18,17 @@ DEFAULT_TEXT_COLOR = 0x000000
 DEFAULT_TITLE = "Plan"
 #: Name of the master slide to base the plan slides on; "" = first master.
 DEFAULT_MASTER = ""
+#: How many colours the picker remembers as "Recently used".
+RECENT_LIMIT = 14
 
 DEFAULTS = {
     "muted_color": DEFAULT_MUTED_COLOR,
     "text_color": DEFAULT_TEXT_COLOR,
     "title": DEFAULT_TITLE,
     "master": DEFAULT_MASTER,
+    # newest first, so the picker can offer them as a palette of their own the
+    # way LibreOffice's colour dropdown does
+    "recent_colors": [],
 }
 
 
@@ -154,7 +159,35 @@ def load(ctx):
     settings["text_color"] = _as_color(settings["text_color"], DEFAULT_TEXT_COLOR)
     settings["title"] = str(settings["title"] or DEFAULT_TITLE)
     settings["master"] = str(settings["master"] or "")
+    settings["recent_colors"] = _as_colors(settings["recent_colors"])
     return settings
+
+
+def _as_colors(value):
+    """A list of sane RGB ints; anything else in the file is dropped."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    colours = []
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, int):
+            continue
+        colour = item & 0xFFFFFF
+        if colour not in colours:
+            colours.append(colour)
+    return colours[:RECENT_LIMIT]
+
+
+def remember_colour(settings, colour):
+    """Record a colour the user just picked, newest first, without duplicates."""
+    recent = [int(colour) & 0xFFFFFF] + list(settings.get("recent_colors") or [])
+    settings["recent_colors"] = _as_colors(recent)   # sanitises, dedupes, truncates
+    return settings["recent_colors"]
+
+
+def user_profile(ctx):
+    """The user profile of the running office; public because the palette loader
+    needs it to find ``<profile>/user/config/*.soc``."""
+    return _user_profile(ctx)
 
 
 def _as_color(value, fallback):

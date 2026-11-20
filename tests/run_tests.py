@@ -298,6 +298,268 @@ def dialog_text_is_readable_and_rows_are_not_cramped():
     for above, below in zip(bottoms, labels[1:]):
         assert below - above >= 6, "label starts %d units under the field above" % (
             below - above)
+@test
+def palettes_are_the_ones_the_office_shows():
+    """The picker offers LibreOffice's own colour tables, correctly parsed.
+
+    The office exposes no palette API at all (``dev/probe_api.py`` finds no
+    ``ColorPicker``/``ColorBox``/``ColorPickerDialog`` in ``offapi.rdb``), so the
+    data is read from ``share/palette/*.soc`` - which means the parser, not an
+    interface, is what silently breaks when a file uses a different XML
+    namespace.  A palette that parses to nothing just never appears.
+    """
+    from plan_impress import palettes
+    found = dict(palettes.load_palettes())
+    for name in ("standard", "libreoffice", "material", "html"):
+        assert name in found, (name, sorted(found))
+    colours = found["standard"]
+    assert len(colours) > 50, len(colours)
+    for label, colour in colours:
+        assert isinstance(label, str) and label, (label, colour)
+        assert isinstance(colour, int) and not isinstance(colour, bool), (label, colour)
+        assert 0 <= colour <= 0xFFFFFF, (label, hex(colour))
+    values = [colour for _label, colour in colours]
+    assert 0x000000 in values and 0xFFFFFF in values, "standard has no black or white"
+    # the preferred order is what makes the dropdown predictable
+    order = [name for name, _colours in palettes.load_palettes()]
+    assert order.index("standard") < order.index("freecolour-hlc"), order
+
+
+@test
+def palettes_read_both_namespaces_and_survive_rubbish():
+    """``standard.soc`` and ``libreoffice.soc`` do not agree on namespaces."""
+    from plan_impress import palettes
+    old = ('<?xml version="1.0"?>'
+           '<office:color-table '
+           'xmlns:office="http://openoffice.org/2000/office" '
+           'xmlns:draw="http://openoffice.org/2000/drawing" '
+           'draw:name="Old">'
+           '<draw:color draw:name="Black" draw:color="#000000"/>'
+           '<draw:color draw:name="Red" draw:color="#F00"/>'
+           '<draw:color draw:name="Broken" draw:color="not-a-colour"/>'
+           '</office:color-table>')
+    name, colours = palettes.parse_colour_table(old, "fallback")
+    assert name == "Old", name
+    assert colours == [("Black", 0x000000), ("Red", 0xFF0000)], colours
+    new = ('<?xml version="1.0"?>'
+           '<office:color-table '
+           'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+           'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0">'
+           '<draw:color draw:name="Teal" draw:color="#008080"/>'
+           '</office:color-table>')
+    assert palettes.parse_colour_table(new, "new")[1] == [("Teal", 0x008080)]
+    assert palettes.parse_colour_table("this is not xml", "fallback") == ("fallback", [])
+    assert palettes.hex_to_rgb("#abc") == 0xAABBCC
+    assert palettes.hex_to_rgb("green") is None
+    # an unreadable file yields the file's name and no colours, never an exception
+    assert palettes.read_soc("/nonexistent/nope.soc") == ("nope", [])
+
+
+@test
+def user_palette_replaces_the_shipped_one():
+    """A user's edited palette wins, and does not appear twice."""
+    import shutil
+    import tempfile
+    from plan_impress import palettes
+    user = tempfile.mkdtemp(prefix="planimpress-palette-")
+    shipped = tempfile.mkdtemp(prefix="planimpress-shipped-")
+    try:
+        with open(os.path.join(user, "standard.soc"), "w", encoding="utf-8") as handle:
+            handle.write('<?xml version="1.0"?><color-table>'
+                         '<color name="Mine" color="#123456"/></color-table>')
+        with open(os.path.join(shipped, "standard.soc"), "w", encoding="utf-8") as handle:
+            handle.write('<?xml version="1.0"?><color-table>'
+                         '<color name="Black" color="#000000"/>'
+                         '<color name="White" color="#FFFFFF"/></color-table>')
+        loaded = palettes.load_palettes(directories=[user, shipped])
+        assert [name for name, _colours in loaded] == ["standard"], loaded
+        assert dict(loaded)["standard"] == [("Mine", 0x123456)], loaded
+    finally:
+        shutil.rmtree(user, ignore_errors=True)
+        shutil.rmtree(shipped, ignore_errors=True)
+
+
+@test
+def recently_picked_colours_are_remembered_newest_first():
+    """What the picker shows as *Recently used* comes straight from the settings.
+
+    The list survives a save and a load, so it has to be able to survive a user
+    editing the JSON file too: strings, booleans and out-of-range numbers in it
+    must not become colours.
+    """
+    from plan_impress import config
+    settings = {"recent_colors": [0x00FF00, "red", True, 0x1_0000_00, 0x00FF00]}
+    remembered = config.remember_colour(settings, 0x1F6EC8)
+    assert remembered[0] == 0x1F6EC8, remembered        # newest first
+    assert 0x00FF00 in remembered, remembered           # and kept, without duplicates
+    assert remembered.count(0x00FF00) == 1, remembered
+    assert all(isinstance(c, int) and 0 <= c <= 0xFFFFFF for c in remembered), remembered
+    # the cap: a list long enough to prove it, each colour distinct
+    for index in range(config.RECENT_LIMIT + 10):
+        config.remember_colour(settings, index)
+    assert len(settings["recent_colors"]) == config.RECENT_LIMIT, settings
+    assert settings["recent_colors"][0] == index, settings["recent_colors"]
+    # and it survives the file: junk dropped, order kept
+    saved = config._as_colors(remembered + ["junk", None, True])
+    assert saved == remembered, saved
+
+
+@test
+def recent_palette_offers_pairs_of_name_and_colour():
+    """The remembered colours come back as a palette, not a list of numbers."""
+    from plan_impress import config, palettes
+    settings = dict(config.DEFAULTS)
+    assert palettes.recent_palette(settings) == [], "nothing remembered, no palette"
+    settings["recent_colors"] = [0x22AA44, 0x22AA44, "nonsense", 0x1F6EC8]
+    entries = palettes.recent_palette(settings)
+    assert [name for name, _colours in entries] == ["Recently used"], entries
+    colours = entries[0][1]
+    assert [colour for _label, colour in colours] == [0x22AA44, 0x1F6EC8], colours
+    for label, colour in colours:
+        assert label == "%06X" % colour, (label, colour)
+
+
+
+@test
+def picker_pages_cover_every_colour():
+    """Paging must not lose colours: a palette cell the user cannot reach is a bug."""
+    from plan_impress import picker
+    colours = [("c%d" % index, index) for index in range(250)]
+    pages = picker.page_count(len(colours))
+    assert pages == -(-250 // picker.CELLS), (pages, picker.CELLS)
+    assert picker.page_count(picker.CELLS) == 1
+    assert picker.page_count(picker.CELLS + 1) == 2
+    reached = [colour for page in range(pages)
+               for _name, colour in picker.page_slice(colours, page)]
+    assert reached == [colour for _name, colour in colours], "colours unreachable"
+    assert picker.page_count(0) == 1, "an empty palette must still have a page"
+    assert picker.page_slice(colours, 99) == [], "a page past the end must be empty"
+
+
+@test
+def picker_hides_the_cells_beyond_the_palette():
+    """A short palette must not leave 55 squares that look pickable.
+
+    The grid is a fixed 60 buttons, so the cells past the end of the palette are
+    only honest once they are switched off - they are otherwise painted in the
+    colour being edited and click as if they were a choice.
+    """
+    from plan_impress import picker
+    ctx = lo.connect()
+    colours = [("c%d" % index, index * 0x010101) for index in range(5)]
+    window = picker.ColourPicker(ctx, [("Few", colours),
+                                       ("Many", [("x%d" % index, index)
+                                                 for index in range(picker.CELLS + 7)])],
+                                 current=0x22AA44)
+    window.build()
+
+    def shown():
+        return [index for index in range(picker.CELLS)
+                if window.control(picker.cell_name(index)).isVisible()]
+
+    try:
+        window.show()                  # peers, listeners, cells: everything but
+        assert shown() == list(range(5)), shown()
+        window._choose_palette(1)             # a full first page
+        assert shown() == list(range(picker.CELLS)), shown()
+        window._turn_page(1)                  # and the remainder on the second
+        assert shown() == list(range(7)), shown()
+    finally:
+        window.dispose()
+
+
+
+@test
+def picker_cells_are_laid_out_apart():
+    """The grid is sixty buttons: they must not land on top of each other."""
+    from plan_impress import picker
+    colours = [("c%d" % index, index * 1000) for index in range(25)]
+    specs = picker._field_specs(["Standard", "Custom"], colours, 0, 3, 0x123456)
+    spots = {}
+    for name, _service, props in specs:
+        props = dict(props)
+        assert props["Width"] > 0 and props["Height"] > 0, (name, props)
+        assert props["PositionX"] + props["Width"] <= picker.DIALOG_WIDTH, name
+        assert props["PositionY"] + props["Height"] <= picker.DIALOG_HEIGHT, name
+        spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
+    shared = {spot: names for spot, names in spots.items() if len(names) > 1}
+    assert not shared, "controls sharing a position: %s" % shared
+    cells = {name: dict(props) for name, _service, props in specs
+             if name.startswith("cell")}
+    assert len(cells) == picker.CELLS, len(cells)
+    for index in range(len(colours)):
+        assert cells["cell%d" % index]["BackgroundColor"] == colours[index][1]
+        assert cells["cell%d" % index]["HelpText"] == colours[index][0], \
+            "a cell without its colour name says nothing on hover"
+    for index in range(len(colours), picker.CELLS):
+        assert cells["cell%d" % index]["HelpText"] == "", "an empty cell looks pickable"
+
+
+@test
+def picking_a_colour_fills_the_field_and_is_remembered():
+    """Clicking a swatch fills the hex field and puts the colour in Recent."""
+    from plan_impress import config, dialog, picker as picker_module
+    ctx = lo.connect()
+    settings = dict(config.DEFAULTS)
+    settings.update({"muted_color": 0xB0B0B0, "text_color": 0x000000,
+                     "recent_colors": [0x22AA44]})
+    window = dialog.SettingsDialog(ctx, settings, ["Master1"])
+    window.build()
+    original = picker_module.pick
+    seen = []
+
+    def answer(ctx, entries, current=0, title="", parent_window=None):
+        seen.append((entries, current))
+        return 0x1F6EC8
+
+    picker_module.pick = answer
+    try:
+        window._peer()
+        window._pick_colour("MutedColor")
+    finally:
+        picker_module.pick = original
+    try:
+        assert window._text("MutedColor") == "1F6EC8", window._text("MutedColor")
+        assert window.settings["recent_colors"][0] == 0x1F6EC8, window.settings
+        assert seen and seen[0][1] == 0xB0B0B0, \
+            "the picker did not start at the current colour"
+        offered = [name for name, _colours in seen[0][0]]
+        assert "Recently used" in offered, offered[:4]
+        assert "standard" in [name.lower() for name in offered], offered[:4]
+        # and it is saved: config.save() writes every known key, so a result()
+        # that drops recent_colors would silently forget what was just picked
+        result = window.result()
+        # both the newly picked colour and the one that was already
+        # remembered go to the file: config.save() writes every key
+        assert result["recent_colors"] == [0x1F6EC8, 0x22AA44], result
+    finally:
+        window.dispose()
+
+
+@test
+def deck_palette_lists_the_colours_the_deck_uses():
+    """The picker offers the presentation's own colours first."""
+    from plan_impress import palettes
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, os.path.join(ROOT, "tests/fixtures/sections.odp"),
+                      hidden=True)
+    try:
+        entries = palettes.deck_palette(doc)
+    finally:
+        lo.close(doc)
+    assert entries, "no colours found in the fixture deck"
+    name, colours = entries[0]
+    assert name == "In this presentation", name
+    assert colours, entries
+    # a cell is built by unpacking each entry, so the shape is part of the
+    # contract - bare ints once made the picker die inside its listener
+    for label, colour in colours:
+        assert isinstance(label, str) and label, (label, colour)
+        assert isinstance(colour, int) and 0 <= colour <= 0xFFFFFF, (label, colour)
+    values = [colour for _label, colour in colours]
+    # the fixture's own blues, so a plan slide can match the deck
+    assert 0x3465A4 in values or 0x729FCF in values, [hex(c) for c in values]
 
 
 @test
@@ -378,7 +640,8 @@ def dialog_build_and_read_back():
             list(window.control("Master").getSelectedItems())
         result = window.result()
         assert result == {"muted_color": 0x00FF00, "text_color": 0x000000,
-                          "title": "Agenda", "master": "Master2"}, result
+                          "title": "Agenda", "master": "Master2",
+                          "recent_colors": []}, result
         # typing an invalid colour must fall back to the stored one
         window.control("TextColor").setText("zzzzzz")
         assert window.result()["text_color"] == 0x000000
@@ -1298,9 +1561,29 @@ def dialog_ok_button_accepts_and_cancel_does_not():
         listeners = {listener.name: listener
                      for _control, listener in window._listeners
                      if hasattr(listener, "name")}
-        assert set(listeners) == {"ok", "cancel"}, listeners
-        assert len(window._listeners) == 4, window._listeners
+        # ... plus one swatch listener per colour row: clicking the swatch is
+        # how the palette picker is opened
+        assert set(listeners) == {"ok", "cancel", "swatch:MutedColor",
+                                  "swatch:TextColor"}, listeners
+        assert len(window._listeners) == 6, window._listeners
         junk = object()              # no Source, no Model: the listener must not care
+        # pressing a swatch opens another window; it must not answer the dialog
+        from plan_impress import picker as picker_module
+        shown = []
+        original = picker_module.pick
+
+        def refuse(ctx, entries, current=0, title="", parent_window=None):
+            shown.append((entries, current, title))
+            return None              # as if the user had pressed Cancel
+
+        picker_module.pick = refuse
+        try:
+            listeners["swatch:MutedColor"].actionPerformed(junk)
+        finally:
+            picker_module.pick = original
+        assert not window.accepted and not window.rejected, "a swatch closed the dialog"
+        assert shown and shown[0][2] == "Pick a Colour", shown
+        assert [name for name, _colours in shown[0][0]], "the picker was opened empty"
         listeners["ok"].actionPerformed(junk)
         assert window.accepted and not window.rejected, "OK did not accept the dialog"
         listeners["cancel"].actionPerformed(junk)

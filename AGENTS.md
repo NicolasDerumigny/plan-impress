@@ -528,6 +528,60 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
     first property read is the unhelpful `cannot get value DrawPages`. `lo._load()` waits
     for the proxy to answer `getURL()` before handing it over.
 
+### The colour picker (`picker.py`, `palettes.py`)
+
+62. **There is no colour picker to reuse.** `ColorPicker`, `ColorBox`,
+   `ColorPickerDialog` and any `XColorPicker` are absent from
+   `program/types/offapi.rdb`, and the only `ColorListBox` string in there is a
+   `com.sun.star.inspection` enum literal for the Object Inspector, not a control
+   (`dev/probe_api.py` asks for each spelling by hierarchical name and finds
+   nothing). So the widget is assembled here out of the same control models the
+   settings dialog uses. Nothing in the API exposes the office's palette list
+   either — see the next fact.
+63. **The palettes are the `.soc` files, and their XML namespaces disagree.**
+   LibreOffice keeps every colour table as
+   `<installation>/share/palette/<name>.soc` (`standard`, `libreoffice`,
+   `material`, `tonal`, `html`, `chart-palettes`, `compatibility`,
+   `freecolour-hlc`, …) plus the user's edited copies under
+   `<profile>/user/config/`, and reads colours from `draw:color` attributes.
+   `standard.soc` and `tonal.soc` use the old `http://openoffice.org/2000/drawing`
+   namespace while `libreoffice.soc` uses the OASIS one, so asking ElementTree for
+   a fixed `{uri}color` silently returns nothing and the palette simply never
+   appears; `palettes._attribute()` looks attributes up by *local* name. Read the
+   user's directory first and `setdefault` by name, or a palette the user edited
+   is quietly replaced by the shipped one.
+64. **A control's paint listener is never called; its mouse listener is.**
+   `dev/probe_paint.py` attaches both to a control in a dialog and drives it with
+   `xdotool`: `mousePressed` arrives with pixel coordinates, `paint` never fires.
+   The grid therefore cannot be drawn — it is `picker.CELLS` (60) button controls
+   with `BackgroundColor` set, which also makes them tab-focusable and keyboard
+   activatable, which a drawn grid would not have been.
+65. **`UnoControlButtonModel` has no `Border`, `BorderColor` or `BorderLine2`.**
+   Setting one is not ignored, it is an error `dialog._apply()` collects as a
+   warning and the tests fail on. It does have `BackgroundColor`, `TextColor`,
+   `TextLineColor`, `HelpText` (a cell's colour name, so hovering says what the
+   square is) and `DefaultButton`. `UnoControlPanelModel` and
+   `UnoControlMessageBoxModel` cannot be created from a dialog model at all —
+   `createInstance()` answers `None` — while `UnoControlImageControlModel` can.
+66. **An exception raised inside a listener disappears.** The office does not carry
+   a Python traceback across the listener boundary: `out/soffice.log` stays empty
+   and the widget simply looks dead — a swatch that opened nothing was a
+   `TypeError` for ten minutes. `SettingsDialog._pick_colour()` therefore catches
+   everything and writes `traceback.format_exc()` to the debug log. Do the same in
+   any new listener.
+67. **A palette is always `[(name, colour), ...]`** — the shape `load_palettes()`
+   returns — because a cell is built by unpacking each entry. `deck_palette()` and
+   `recent_palette()` label the colours they invent with their hex value. A bare
+   int in either is fact 66's invisible crash, which is what
+   `recent_palette_offers_pairs_of_name_and_colour` and the assertions in
+   `deck_palette_lists_the_colours_the_deck_uses` are there to catch.
+68. **Cells past the end of the palette have to be switched off, and only after
+   `createPeer`.** `setVisible()` talks to the peer, so `run()` calls
+   `_paint_cells()` after `_peer()`; before the fix a 5-colour palette left 55
+   squares painted in the colour being edited, looking pickable and picking
+   something else. Paging (`<`, `>`) exists because no scrollable container's model
+   can be created and `freecolour-hlc` has 240 colours.
+
 ## Testing notes
 
 `tests/run_tests.py` has no framework: `@test` collects functions, a `Skip`
@@ -566,6 +620,13 @@ stop), that removing the slides of such a wreck loses nothing of the deck,
 idempotency and clean removal, the master-slide setting, `Addons.xcu` registration
 read back through the configuration provider, and the `service:` URL dispatch path a
 menu click takes.
+The colour picker is covered the same two ways: the palette files are parsed from
+disk (both namespaces, a corrupt file, a user's palette overriding a shipped one,
+the recently used list sanitised on the way in and on the way out), and the
+widget's geometry is checked control by control — sixty cells that do not overlap,
+each cell carrying the colour and the name it stands for, the cells past the end of
+the palette switched off, and every colour of a 250-colour palette reachable
+through the pager.
 
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),
@@ -578,6 +639,11 @@ it back and asserts the section ranges (`indexes`), their `Id`s and that the
 trailing unsectioned slide ends up in the last section.
 
 ### Looking at the result
+
+Whether the office has an API at all is worth asking before writing a widget
+against it: `dev/probe_api.py` searches the type repository by hierarchical name
+and `dev/probe_palettes.py` reports where the palettes and the deck's own colours
+actually come from; both are what the picker's design rests on.
 
 Assertions cannot tell you a slide looks right, and a font size that is wrong by
 a factor of ten passed every test once. To see the generated deck: export a

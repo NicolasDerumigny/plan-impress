@@ -28,6 +28,8 @@ are not importable, and a top-level ``from com.sun.star... import`` would make
 registration fail with ``ImportError: No module named 'com'``.
 """
 
+import traceback
+
 import uno
 
 from plan_impress import config
@@ -171,11 +173,13 @@ def _field_specs(values, masters):
             ("Height", _FIELD_H), ("FontHeight", _FONT),
         ]))
         if name in _COLOUR_FIELDS:
-            specs.append(("swatch" + name, _FIXED_TEXT, [
+            # a button, not a label: clicking the swatch is what opens the
+            # palette picker, the way the arrow opens the font-colour dropdown
+            specs.append(("swatch" + name, _BUTTON, [
                 ("Label", " "), ("PositionX", _SWATCH_X), ("PositionY", y),
                 ("Width", _SWATCH_W), ("Height", _FIELD_H),
                 ("BackgroundColor", config.hex_to_color(values[name], 0)),
-                ("BorderColor", 0x808080),
+                ("HelpText", "Pick a colour from a palette"),
             ]))
     specs.append(("ok", _BUTTON, [
         ("Label", "OK"), ("PositionX", _OK_X), ("PositionY", _BUTTON_Y),
@@ -329,12 +333,57 @@ class SettingsDialog(object):
 
     # -- interaction ------------------------------------------------------- #
     def _press(self, name):
+        if name.startswith("swatch:"):
+            self._pick_colour(name.split(":", 1)[1])
+            return                      # the dialog stays open, of course
         self.accepted = name == "ok"
         self.rejected = not self.accepted
         try:
             self.dialog.endExecute()
         except Exception:
             pass
+
+    def _pick_colour(self, name):
+        """Open the palette picker for one of the two colour rows.
+
+        The deck's own colours come first, then the recently picked ones, then
+        the palettes of the installation: the order is the order in which a
+        colour is likely to be wanted, and it is why the picker is ours rather
+        than a plain hex box.
+        """
+        # An exception here would otherwise vanish: it is raised inside a
+        # listener, and the office does not carry a Python traceback across
+        # that boundary, so a broken picker looks exactly like a dead swatch.
+        from plan_impress import palettes, picker
+        # the field is named after the setting it edits, minus the underscore
+        setting = {"MutedColor": "muted_color", "TextColor": "text_color"}[name]
+        try:
+            current = config.hex_to_color(self._text(name),
+                                          self.settings.get(setting, 0))
+            entries = []
+            document = _current_document(self.ctx)
+            if document is not None:
+                entries += palettes.deck_palette(document)
+            entries += palettes.recent_palette(self.settings)
+            entries += palettes.load_palettes(self.ctx)
+            config.log(self.ctx, "pick %s: %06X from %s"
+                       % (name, current, [n for n, _c in entries]))
+            chosen = picker.pick(self.ctx, entries, current,
+                                 title="Pick a Colour")
+        except Exception:
+            config.log(self.ctx, "pick failed:\n%s" % traceback.format_exc())
+            config.log_error(self.ctx, "pick %s failed" % name)
+            return
+        config.log(self.ctx, "pick answer: %s" % (chosen,))
+        if chosen is None:
+            return
+        self.values[name] = config.color_to_hex(chosen)
+        try:
+            self.control(name).setText(self.values[name])
+        except Exception:
+            self.control_model(name).setPropertyValue("Text", self.values[name])
+        self._refresh_swatch(name)
+        config.remember_colour(self.settings, chosen)
 
     def _refresh_swatch(self, name):
         try:
@@ -401,6 +450,10 @@ class SettingsDialog(object):
             watcher = ColourWatcher(field)
             control.addTextListener(watcher)
             self._listeners.append((control, watcher))
+            swatch = self.control("swatch" + field)
+            listener = Buttons("swatch:" + field)
+            swatch.addActionListener(listener)
+            self._listeners.append((swatch, listener))
 
     def run(self):
         """Show the dialog modally; return the new settings, or ``None``."""
@@ -443,6 +496,10 @@ class SettingsDialog(object):
         except Exception:
             pass
         return {
+            # config.save() writes every known key, so anything not carried here
+            # is silently reset: the colours picked during this session live in
+            # self.settings and have to travel back with the rest
+            "recent_colors": list(self.settings.get("recent_colors") or []),
             "muted_color": config.hex_to_color(self._text("MutedColor"),
                                                self.settings["muted_color"]),
             "text_color": config.hex_to_color(self._text("TextColor"),
@@ -467,6 +524,21 @@ class SettingsDialog(object):
                 except Exception:
                     pass
         self.dialog = self.model = self.window = None
+
+
+def _current_document(ctx):
+    """The presentation the picker should borrow colours from, or None.
+
+    The settings are per profile and do not need a document, so this may well
+    answer None; the picker then simply has fewer palettes to offer.
+    """
+    try:
+        component = ctx.getByName("/singletons/com.sun.star.frame.theDesktop")\
+            .getCurrentComponent()
+        component.DrawPages                 # only a presentation answers this
+    except Exception:
+        return None
+    return component
 
 
 def open_settings(ctx, settings, masters):

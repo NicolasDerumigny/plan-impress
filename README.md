@@ -9,6 +9,10 @@ slides for the presentation's sections:
   the muted colour;
 * a **Settings…** dialog for the muted colour, the highlight colour, the title of
   the plan slides and the master slide they are based on;
+* a **colour picker** behind each colour: click the swatch and choose from the
+  colours this presentation already uses, the ones you picked recently, or any
+  palette LibreOffice ships (`standard`, `material`, `html`, …) — the same list
+  the font-colour dropdown shows;
 * the deck's **footer** on all of them: the date, the footer text and the page
   number a slide of the deck shows are shown by the generated slides too.
 
@@ -61,7 +65,7 @@ Requires LibreOffice 7.0 or newer; developed and tested on 26.8.
 |---|---|
 | Insert Plan Slides | Regenerates the overview slide and one plan slide per section |
 | Remove Plan Slides | Deletes every slide the extension generated |
-| Settings… | Colours, plan slide title, master slide |
+| Settings… | Colours (each with a palette picker), plan slide title, master slide |
 | Toggle Debug Log | Turns the trace log on or off |
 
 Plan slides are named `PlanImpress:Overview` and `PlanImpress:Section=<n>`.
@@ -89,6 +93,8 @@ the `.oxt`.
 | `src/handler.py` | The `com.sun.star.task.Job` implementations the menu items dispatch to |
 | `src/plan_impress/core.py` | All document-model work: sections, page insertion, slide content |
 | `src/plan_impress/dialog.py` | The settings dialog and the message boxes |
+| `src/plan_impress/picker.py` | The palette picker the colour swatches open |
+| `src/plan_impress/palettes.py` | The office's `.soc` colour tables, the deck's own colours, recently used ones |
 | `src/plan_impress/config.py` | Settings load/save, colour helpers, logging |
 | `src/description.xml` | Extension metadata, version, dependencies |
 | `src/META-INF/manifest.xml` | Declares `Addons.xcu` as configuration data and `handler.py` as a Python UNO component |
@@ -125,6 +131,13 @@ failure would silently make the whole extension disappear from the menu.
 * **Inline, in the office process.** The commands run directly inside
   `trigger()`. Running them from a Python worker thread crashes the office (see
   `AGENTS.md`).
+* **The picker is ours, because there is nothing to borrow.** LibreOffice exposes
+  no colour picker and no palette list through UNO (`AGENTS.md`), so the popup is
+  built out of AWT control models and the palettes are read from the same
+  `share/palette/*.soc` files the office reads — which is also why the picker can
+  offer the deck's own colours first: a plan slide should be coloured like the
+  deck. Clicking a colour is the answer, as in the font-colour dropdown; every
+  colour you pick is remembered as *Recently used*.
 * **The footer is copied from the deck, never invented.** Impress keeps the date,
   the footer text and the page number on each *slide*, so a slide the extension
   creates starts without them; `core.apply_footer()` copies them from the first
@@ -170,9 +183,12 @@ before the values are read back. Screenshots come last, because assertions have
 passed on a dialog nobody could use.
 
 Debugging helpers live in `dev/` (`debug_twice.py`, `debug_move.py`,
-`debug_dialog*.py`, `debug_footer*.py`, `dep_probe.py`, plus `render_plan.py` and
-`show_plan.py` for a look at the result); each one reproduces one of the
-LibreOffice behaviours described in `AGENTS.md` and prints what it measured.
+`debug_dialog*.py`, `debug_footer*.py`, `dep_probe.py`, `measure_text.py`, plus
+`render_plan.py` and `show_plan.py` for a look at the result); each one
+reproduces one of the LibreOffice behaviours described in `AGENTS.md` and prints
+what it measured. `probe_api.py`, `probe_palettes.py` and `probe_paint.py` are the
+three that asked the office whether it had a colour picker, a palette list or a
+paintable control at all — it has none, which is why `picker.py` exists.
 
 ## Documentation for agents
 
