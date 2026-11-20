@@ -7,8 +7,8 @@ slides for the presentation's sections:
 * one **plan slide at the top of each section**, also listing every section,
   with only the current section drawn in the text colour and all the others in
   the muted colour;
-* a **Settings…** dialog for the muted colour, the highlight colour, the heading
-  of the generated slides and the master slide they are based on.
+* a **Settings…** dialog for the muted colour, the highlight colour, the title of
+  the plan slides and the master slide they are based on.
 
 ```
 before                              after
@@ -59,7 +59,7 @@ Requires LibreOffice 7.0 or newer; developed and tested on 26.8.
 |---|---|
 | Insert Plan Slides | Regenerates the overview slide and one plan slide per section |
 | Remove Plan Slides | Deletes every slide the extension generated |
-| Settings… | Colours, heading text, master slide |
+| Settings… | Colours, plan slide title, master slide |
 | Toggle Debug Log | Turns the trace log on or off |
 
 Plan slides are named `PlanImpress:Overview` and `PlanImpress:Section=<n>`.
@@ -139,21 +139,29 @@ make unit       # the tests that need no office
 make icons      # regenerate src/icons/*.png
 make fixture    # regenerate tests/fixtures/sections.odp
 make clean
+
+python3 dev/open_fixture.py   # open the fixture in the dev office for a UI check
+python3 dev/render_plan.py    # insert with the saved settings, export PDF + PNGs
 ```
 
 Requirements: LibreOffice (with `unopkg` and pyuno), Python 3, `zip`, and an X
 display for the tests — `dev/start_ui.sh` starts `Xvfb :97` if `DISPLAY` is not
 already set. Set `PLAN_IMPRESS_PROFILE` / `PLAN_IMPRESS_PORT` to move the
-development instance elsewhere.
+development instance elsewhere, and `PLAN_IMPRESS_DATA_DIR` to point the settings
+file somewhere else (the `dev/` scripts run outside the office, which is the only
+way the extension itself finds its profile — see `AGENTS.md`).
 
 The tests connect over UNO to the running development office (`dev/lo.py`) and
 drive it the same way a user does: the document model through
 `plan_impress.core`, the menu items by dispatching their `service:` URL on the
-document's frame. The modal settings dialog is tested structurally — the
-controls are built, a native peer is attached, and the values are read back.
+document's frame. The settings dialog is checked where it used to break: the
+controls are built, a native peer is attached, and every control's rectangle is
+asserted to be its own — distinct position, non-zero size, inside the window —
+before the values are read back. Screenshots come last, because assertions have
+passed on a dialog nobody could use.
 
 Debugging helpers live in `dev/` (`debug_twice.py`, `debug_move.py`,
-`debug_dialog.py`, `dep_probe.py`); each one reproduces one of the LibreOffice
+`debug_dialog*.py`, `dep_probe.py`); each one reproduces one of the LibreOffice
 behaviours described in `AGENTS.md` and prints what it measured.
 
 ## Documentation for agents

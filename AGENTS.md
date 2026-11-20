@@ -40,7 +40,13 @@ make test       # install + full suite against the dev office (needs X; start_ui
 make unit       # the tests that need no office (colour helpers, dialog layout)
 make install    # stop office, package src/, unopkg add, start office
 python3 tests/run_tests.py <substring>     # run a subset of the tests
+python3 dev/open_fixture.py   # open the fixture in the dev office, for a UI check
+python3 dev/render_plan.py    # insert with the *saved* settings, export PDF + PNGs
 ```
+
+`make test`/`make install` need `DISPLAY` pointing at a live X server (the dev
+setup is in fact 37). `dev/` scripts that read settings from outside the office
+need `PLAN_IMPRESS_DATA_DIR` (fact 33).
 
 The dev office is a **separate** LibreOffice with its own profile
 (`loprofile/`) and its own UNO socket (port 2009). Do not kill the user's own
@@ -197,44 +203,82 @@ reproducible with a script in `dev/`.
 
 24. `dialog.Model = model` **raises** (`UnknownPropertyException: ... property
     is readonly`) — use `dialog.setModel(model)`.
-25. `XNameContainer.insertByName()` on a dialog model **rejects** a
-    `sequence<PropertyValue>` that carries a `Servicename`
-    (`IllegalArgumentException`). Create the control's own model service
-    (`com.sun.star.awt.UnoControlEditModel`, `...ButtonModel`,
-    `...ListBoxModel`, `...FixedTextModel`), set the properties on it, and insert
-    that object. `dev/debug_dialog.py` demonstrates both failures.
-26. Sequence properties need explicit typing: `StringItemList` must be
-    `uno.Any("[]string", tuple(...))`, `SelectedItems` `uno.Any("[]short", ...)`.
-    `SelectedItems` is **0-based** on the model, and setting it before
-    `createPeer()` is what preselects the current master slide.
-    `getControl(name)` returns a proxy with a limited method set — `selectItem()`
-    is a no-op and `getPropertyValue()` is missing; read/write style properties
-    through `control.Model` / `dialog.Model.getByName(name)`.
-27. The dialog is built as `_field_specs(values, masters)` → `(name, model
-    service, [(property, value)])` triples, deliberately separated from UNO
-    object creation so `tests/run_tests.py` can assert the layout with no
-    display. Every control must fit inside `DIALOG_WIDTH`/`DIALOG_HEIGHT`; the
-    test enforces it.
-28. Message boxes: `Toolkit.createMessageBox(parent, type, buttons, text)` with
-    `MessageBoxType` `0|3|4` (message/warning/error) and `MessageBoxButtons`
-    `1` (OK) or `5` (Yes/No); `execute()` returns `MessageBoxResults`
-    (`6` = Yes). Always `dispose()` in a `finally`, and never let a reporting
-    failure swallow the real error.
-29. `setTitle()` works on the dialog, `setPropertyValue("Title", …)` does not.
+25. **Control models must come from the dialog model's own `createInstance()`.**
+    That is what `/usr/lib/libreoffice/program/wizards/ui/UnoDialog.py` does, and it
+    is the whole reason the form has a layout: such a model keeps
+    `PositionX`/`PositionY`/`Width`/`Height`, while one from the service manager has
+    *no* geometry properties at all, so every control lands at 0,0 with its natural
+    size and the settings dialog is an unreadable pile in the corner.
+    `dev/debug_dialog_props.py` prints the two property sets side by side.
+26. `XNameContainer.insertByName()` on a dialog model **rejects** the documented
+    `sequence<PropertyValue>` carrying a `Servicename` (`IllegalArgumentException`
+    in every spelling tried — control or model service name, list/tuple/`uno.Any`,
+    with or without geometry, before or after the peer exists:
+    `dev/debug_dialog_insert.py`). Insert the model object instead.
+27. The dialog's **window size is a model property**: set `Width`/`Height` on the
+    dialog model (`Width=140` → a 354-wide window, `dev/debug_dialog_windowsize.py`).
+    `XControl::setPosSize` moves the dialog and silently **discards the size**, so
+    `setPosSize(..., POS | SIZE)` still leaves the 300x450 default; use it for the
+    position only, as `dialog._centre()` does.
+28. Those coordinates are **AWT dialog units** — neither pixels nor 1/100 mm. One
+    unit is about 2.5 px of peer geometry (measured 2.53 x 2.39 in
+    `dev/debug_dialog_units.py`), which puts the form at 143x96 units ≈ 360x240 px —
+    the same magnitude as the wizards, which give a label `Height=8`.
+29. The two factories have different property sets: the container's own adds
+    `PositionX/Y`, `Width`, `Height`, `Name`, `Tag`, `Step`, `TabIndex`,
+    `ResourceResolver` and **lacks** `MaxLen`, `TabStop`, `TabPosition`, `Multiple`.
+    Those four are therefore not set: the hex fields are validated in `result()`
+    and the tab order follows position. `setPropertyValues()` fails *as a whole* if
+    one property is unknown, which is why `_apply()` falls back to one by one.
+30. A list box only shows a selection when `SelectedItems` travels **with the model
+    into `insertByName`**; set on the inserted child it is accepted and then ignored
+    by the peer (`getSelectedItemPos()` stays -1 — `dev/debug_dialog_masters.py`).
+    Sequence properties need explicit typing: `uno.Any("[]string", ...)` for
+    `StringItemList`, `uno.Any("[]short", ...)` for `SelectedItems` (0-based).
+    `getControl(name)` exposes a limited method set: `selectItem()`/`selectItemPos()`
+    raise on the argument count and there is no `getPropertyValue`.
+31. Give every button its **own** `XActionListener`. Deciding which one was pressed
+    from `event.Source.Model.Name` failed silently, so OK became a cancel: the
+    dialog closed and nothing was saved.
+32. `Toolkit.createMessageBox(parent, type, buttons, text)` builds the message
+    boxes, with `MessageBoxType` `0|3|4` (message/warning/error) and
+    `MessageBoxButtons` `1` (OK) or `5` (Yes/No); `execute()` returns
+    `MessageBoxResults` (`6` = Yes). Always `dispose()` in a `finally`, and never
+    let a reporting failure swallow the real error. `setTitle()` works on the
+    dialog, `setPropertyValue("Title", …)` does not.
+
+### Settings and logs (`config.py`)
+
+33. **The profile comes from the deployment path, not from the office.** Asking
+    pyuno is a dead end — `PathSettings.User` and
+    `PathSubstitution.getSubstitutedValue()` both raise `AttributeError` there —
+    and the old hard-coded `~/.config/libreoffice/4/user` fallback made the
+    extension save into a *different* LibreOffice, so pressing OK appeared to do
+    nothing. A deployed extension lives under `<profile>/user/uno_packages/...`, so
+    `config._profile_from_path(__file__)` reads the profile out of its own path.
+    `PLAN_IMPRESS_DATA_DIR` overrides it, which the `dev/` scripts need because
+    they run outside the office and have no deployment path.
 
 ### Out-of-process test scripts
 
-30. A remote document proxy does **not** expose `getComponentContext()`, so
+34. A remote document proxy does **not** expose `getComponentContext()`, so
     `core`'s functions take an optional `ctx` argument (`insert_plan(doc,
     settings, ctx)`). Keep it optional — the in-process Job relies on the
     default — and pass the connected context from tests.
-31. Tests need a controller and a frame (moving slides and dispatching commands
+35. Tests need a controller and a frame (moving slides and dispatching commands
     both require one), so they load documents **non-hidden** against the UI-mode
     dev office. `lo.open_doc(..., hidden=False)` waits for the controller.
-32. The office logs to `out/soffice.log`. The extension's own logs are
+36. The office logs to `out/soffice.log`. The extension's own logs are
     `loprofile/user/planimpress/error.log` (always written) and `debug.log`
     (only with the `debug` marker file in that folder, or
     `PLAN_IMPRESS_DEBUG=1`); the *Toggle Debug Log* menu item flips it.
+37. The UI itself can only be checked on a real display:
+    `Xvfb :98 -screen 0 1440x900x24` plus `marco --replace` as window manager,
+    `DISPLAY=:98 make install`, `python3 dev/open_fixture.py`, then drive the menu
+    with `xdotool mousemove X Y click 1` and capture with `scrot -o`.
+    `dev/render_plan.py` renders the generated slides to PDF/PNG instead. Both are
+    how the settings dialog was finally confirmed — assertions had passed the whole
+    time it was unusable.
 
 ## Testing notes
 
@@ -244,10 +288,13 @@ substring (`python3 tests/run_tests.py dialog`). Tests that need the installed
 extension are skipped when it is not installed, so `make unit` is useful without
 packaging.
 
-The suite covers: settings round-trip and corrupt-file tolerance, colour
-helpers, the point/unit conversion, dialog layout *and* a real control model
-with a native peer, the inserted layout (position of every plan slide,
-per-paragraph colours, the overview outside all sections), readable font sizes
+The suite covers: settings round-trip and corrupt-file tolerance, where the
+settings file is allowed to live, colour helpers, the point/unit conversion, the
+dialog's *geometry* (every control's rectangle in the specs, and the real peer
+geometry: distinct positions, non-zero sizes, nothing outside the window) plus a
+control model with a native peer and read-back values, the inserted layout
+(position of every plan slide, per-paragraph colours, the overview outside all
+sections), a deck whose first slide belongs to no section, readable font sizes
 with nothing drawn off the slide, idempotency and clean removal, the
 master-slide setting, `Addons.xcu` registration read back through the
 configuration provider, and the `service:` URL dispatch path a menu click takes.

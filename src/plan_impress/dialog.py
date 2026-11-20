@@ -1,18 +1,26 @@
 """Small UI layer: message boxes and the settings dialog.
 
-Two LibreOffice quirks shaped this module; both are measured, not guessed (see
-``dev/debug_dialog.py``):
+Three LibreOffice quirks shaped this module; all of them are measured, not
+guessed (``dev/debug_dialog*.py`` reproduces each one):
 
 ``com.sun.star.awt.UnoControl``'s ``Model`` property is *read-only*
     You cannot do ``dialog.Model = dialogModel`` (``UnknownPropertyException:
     ... property is readonly``).  Use ``dialog.setModel(dialogModel)``.
 
-``XNameContainer.insertByName`` on a dialog model rejects a
-``sequence<PropertyValue>`` with a ``Servicename`` entry
-    (``IllegalArgumentException``).  Create each control's own model service
-    (``com.sun.star.awt.UnoControlEditModel`` and friends), set its properties,
-    and insert *that*.  Sequence properties such as ``StringItemList`` also need
-    an explicit ``uno.Any("[]string", ...)``; a plain tuple is refused.
+Control models must come from the *dialog model's* own ``createInstance``
+    A model from the service manager exposes no ``PositionX``/``Width``/``Height``
+    (``UnknownPropertyException``) and ``insertByName`` refuses a
+    ``sequence<PropertyValue>`` carrying a ``Servicename``, so with that route
+    every control lands at 0,0 with its natural size - the form is a pile in the
+    corner.  ``self.model.createInstance(service)`` returns a model that does keep
+    its geometry, which is how ``wizards/ui/UnoDialog.py`` builds its dialogs.
+    Sequence properties such as ``StringItemList`` still need an explicit
+    ``uno.Any("[]string", ...)``; a plain tuple is refused.
+
+The dialog's *window* size is a model property too
+    ``XControl::setPosSize`` moves the dialog and silently ignores the size, so
+    ``Width``/``Height`` are set on the dialog model; the position is set with
+    ``setPosSize`` afterwards.  See ``dev/debug_dialog_windowsize.py``.
 
 ``com.sun.star.*`` is imported lazily inside the functions: during extension
 registration LibreOffice imports this module from a context where those modules
@@ -75,19 +83,47 @@ def confirm(ctx, text):
 # settings dialog
 # --------------------------------------------------------------------------- #
 
-#: (control name, label, x, y, label width) for the label/field rows.  Units
-#: are 1/100 mm, the AWT control coordinate system.
+#: ``(control name, label)`` for the label/field rows, top to bottom.
 _ROWS = (
-    ("MutedColor", "Muted text colour (hex):", 15, 15, 130),
-    ("TextColor", "Current section colour (hex):", 15, 42, 130),
-    ("Title", "Slide heading:", 15, 69, 130),
-    ("Master", "Master slide:", 15, 96, 130),
+    ("MutedColor", "Muted colour (hex):"),
+    ("TextColor", "Highlight colour (hex):"),
+    ("Title", "Plan slide title:"),
+    ("Master", "Master slide:"),
 )
-_EDIT_X, _EDIT_W = 155, 70
-_SWATCH_X, _SWATCH_W = 235, 45
-DIALOG_WIDTH, DIALOG_HEIGHT = 320, 190
+
+# --------------------------------------------------------------------------- #
+# geometry
+# --------------------------------------------------------------------------- #
+#
+# ``PositionX``/``PositionY``/``Width``/``Height``, on the dialog model and on
+# every control model, are in the AWT dialog coordinate system - not pixels and
+# not 1/100 mm.  One unit is about 2.5 px of peer geometry (``Width=140`` gives
+# a 354 wide window, ``dev/debug_dialog_windowsize.py``), which puts this form at
+# roughly 360 x 240 px, the same magnitude the shipped wizards use
+# (``wizards/ui/PathSelection.py`` gives a label ``Height=8``).
+_MARGIN = 8
+_LABEL_X = _MARGIN
+_LABEL_W = 62
+_FIELD_X = _LABEL_X + _LABEL_W + 2
+_FIELD_W = 42
+_SWATCH_X = _FIELD_X + _FIELD_W + 3
+_SWATCH_W = 18
+_FIRST_ROW_Y = 12
+_ROW_STEP = 14
+_LABEL_H = 8
+_FIELD_H = 12
+_BUTTON_W = 28
+_BUTTON_H = 14
+_BUTTON_GAP = 3
+_ROW_GAP = 6
+DIALOG_WIDTH = _SWATCH_X + _SWATCH_W + _MARGIN
+_BUTTON_Y = _FIRST_ROW_Y + len(_ROWS) * _ROW_STEP + _ROW_GAP
+DIALOG_HEIGHT = _BUTTON_Y + _BUTTON_H + _MARGIN
+_OK_X = DIALOG_WIDTH - 2 * _BUTTON_W - _BUTTON_GAP - _MARGIN
+_CANCEL_X = _OK_X + _BUTTON_W + _BUTTON_GAP
 _FONT = 10
 _COLOUR_FIELDS = ("MutedColor", "TextColor")
+_POS = 1                     # com.sun.star.awt.PosSize.POS
 
 _FIXED_TEXT = "com.sun.star.awt.UnoControlFixedTextModel"
 _EDIT = "com.sun.star.awt.UnoControlEditModel"
@@ -95,44 +131,58 @@ _LISTBOX = "com.sun.star.awt.UnoControlListBoxModel"
 _BUTTON = "com.sun.star.awt.UnoControlButtonModel"
 
 
+def _master_index(values, masters):
+    """Which entry of the master list to show: the saved one, else the first."""
+    wanted = str(values.get("master") or "")
+    return masters.index(wanted) if wanted in masters else 0
+
+
 def _field_specs(values, masters):
     """The control description as ``(name, model service, properties)`` triples.
 
     Kept separate from UNO object creation so the tests can assert on the
-    layout without a display.
+    layout - every control's rectangle, and therefore the absence of overlap -
+    without a display.
     """
     specs = []
-    for name, label, x, y, width in _ROWS:
+    for index, (name, label) in enumerate(_ROWS):
+        y = _FIRST_ROW_Y + index * _ROW_STEP
         specs.append(("label" + name, _FIXED_TEXT, [
-            ("Label", label), ("PositionX", x), ("PositionY", y),
-            ("Width", width), ("Height", 14), ("FontHeight", _FONT),
+            ("Label", label), ("PositionX", _LABEL_X), ("PositionY", y + 2),
+            ("Width", _LABEL_W), ("Height", _LABEL_H), ("FontHeight", _FONT),
         ]))
-        props = [("PositionX", _EDIT_X), ("PositionY", y - 2), ("Width", _EDIT_W),
-                 ("Height", 20), ("FontHeight", _FONT), ("TabStop", True)]
         if name == "Master":
             service = _LISTBOX
-            props = [("StringItemList", tuple(masters)),
-                     ("Dropdown", True), ("Multiple", False)] + props
+            props = [("StringItemList", tuple(masters)), ("Dropdown", True),
+                     # SelectedItems has to be on the model *before* it is
+                     # inserted: a selection put on the inserted child never
+                     # reaches the peer, and the box stays empty
+                     # (dev/debug_dialog_masters.py).
+                     ("SelectedItems", (_master_index(values, masters),))]
         else:
             service = _EDIT
-            props = [("Text", values[name]), ("MaxLen", 7)] + props
-        specs.append((name, service, props))
+            # No MaxLen: the container's own model service has none, so a hex
+            # field is not capped here - result() validates instead.
+            props = [("Text", values[name])]
+        specs.append((name, service, props + [
+            ("PositionX", _FIELD_X), ("PositionY", y), ("Width", _FIELD_W),
+            ("Height", _FIELD_H), ("FontHeight", _FONT),
+        ]))
         if name in _COLOUR_FIELDS:
             specs.append(("swatch" + name, _FIXED_TEXT, [
-                ("Label", " "), ("PositionX", _SWATCH_X), ("PositionY", y - 2),
-                ("Width", _SWATCH_W), ("Height", 20),
+                ("Label", " "), ("PositionX", _SWATCH_X), ("PositionY", y),
+                ("Width", _SWATCH_W), ("Height", _FIELD_H),
                 ("BackgroundColor", config.hex_to_color(values[name], 0)),
                 ("BorderColor", 0x808080),
             ]))
     specs.append(("ok", _BUTTON, [
-        ("Label", "OK"), ("PositionX", 105), ("PositionY", 150),
-        ("Width", 90), ("Height", 26), ("FontHeight", _FONT),
-        ("DefaultButton", True), ("TabStop", True), ("TabPosition", 1),
+        ("Label", "OK"), ("PositionX", _OK_X), ("PositionY", _BUTTON_Y),
+        ("Width", _BUTTON_W), ("Height", _BUTTON_H), ("FontHeight", _FONT),
+        ("DefaultButton", True),
     ]))
     specs.append(("cancel", _BUTTON, [
-        ("Label", "Cancel"), ("PositionX", 205), ("PositionY", 150),
-        ("Width", 90), ("Height", 26), ("FontHeight", _FONT),
-        ("TabStop", True), ("TabPosition", 2),
+        ("Label", "Cancel"), ("PositionX", _CANCEL_X), ("PositionY", _BUTTON_Y),
+        ("Width", _BUTTON_W), ("Height", _BUTTON_H), ("FontHeight", _FONT),
     ]))
     return specs
 
@@ -141,7 +191,25 @@ def _coerce(name, value):
     """UNO needs explicit types for sequences; a plain tuple is refused."""
     if name == "StringItemList":
         return uno.Any("[]string", tuple(str(item) for item in value))
+    if name == "SelectedItems":
+        return uno.Any("[]short", tuple(int(item) for item in value))
     return value
+
+
+def _apply(control_model, props, warnings, name):
+    """Set all properties at once, the way the wizards do; fall back to one by one."""
+    names = tuple(property_name for property_name, _value in props)
+    values = tuple(_coerce(property_name, value) for property_name, value in props)
+    try:
+        uno.invoke(control_model, "setPropertyValues", (names, values))
+        return
+    except Exception:
+        pass                      # one unsupported property must not lose them all
+    for property_name, value in props:
+        try:
+            control_model.setPropertyValue(property_name, _coerce(property_name, value))
+        except Exception as error:
+            warnings.append("%s.%s: %s" % (name, property_name, error))
 
 
 class SettingsDialog(object):
@@ -171,8 +239,24 @@ class SettingsDialog(object):
         return list(self._warnings)
 
     # -- construction ------------------------------------------------------ #
+    def _new_control_model(self, service):
+        """A control model that keeps the geometry it is given.
+
+        It has to come from the **dialog model's own factory**.  A model created
+        from the service manager has no ``PositionX``/``Width``/``Height``
+        properties at all (``UnknownPropertyException``), so every control lands
+        at 0,0 with its natural size and the form is an unreadable pile in the
+        corner - the bug this function exists for.  Measured in
+        ``dev/debug_dialog_wizard.py``, and it is what
+        ``/usr/lib/libreoffice/program/wizards/ui/UnoDialog.py`` does.
+        """
+        try:
+            return self.model.createInstance(service)
+        except Exception:
+            return self.ctx.ServiceManager.createInstanceWithContext(service, self.ctx)
+
     def build(self):
-        """Create the dialog and all of its controls (no peer yet)."""
+        """Create the dialog, its window size and all of its controls."""
         manager = self.ctx.ServiceManager
         self.dialog = manager.createInstanceWithContext(
             "com.sun.star.awt.UnoControlDialog", self.ctx)
@@ -180,14 +264,16 @@ class SettingsDialog(object):
             "com.sun.star.awt.UnoControlDialogModel", self.ctx)
         # dialog.Model = self.model would raise: the property is read-only.
         self.dialog.setModel(self.model)
+        # The window's size comes from the model: XControl::setPosSize moves the
+        # dialog but throws the size away (dev/debug_dialog_windowsize.py).
+        for property_name, value in (("Width", DIALOG_WIDTH), ("Height", DIALOG_HEIGHT)):
+            try:
+                self.model.setPropertyValue(property_name, value)
+            except Exception as error:
+                self._warnings.append("dialog.%s: %s" % (property_name, error))
         for name, service, props in _field_specs(self.values, self.masters):
-            control_model = manager.createInstanceWithContext(service, self.ctx)
-            for property_name, value in props:
-                try:
-                    control_model.setPropertyValue(property_name,
-                                                   _coerce(property_name, value))
-                except Exception as error:
-                    self._warnings.append("%s.%s: %s" % (name, property_name, error))
+            control_model = self._new_control_model(service)
+            _apply(control_model, props, self._warnings, name)
             self.model.insertByName(name, control_model)
         return self.dialog
 
@@ -203,24 +289,41 @@ class SettingsDialog(object):
         try:
             self.dialog.createPeer(toolkit, None)
         except Exception:
-            descriptor = uno.createUnoStruct("com.sun.star.awt.WindowDescriptor")
-            descriptor.Type = 0  # com.sun.star.awt.WindowType.TOP
-            descriptor.PosSize = 3  # POS | SIZE
-            descriptor.X, descriptor.Y = 120, 120
-            descriptor.Width, descriptor.Height = DIALOG_WIDTH, DIALOG_HEIGHT
-            self.window = toolkit.createWindow(descriptor)
-            self.dialog.createPeer(toolkit, self.window)
+            self.dialog.createPeer(toolkit, _parent_window(self.ctx))
+        self._centre()
+
+    def _centre(self):
+        """Put the dialog in the middle of the frame it belongs to.
+
+        ``setPosSize`` does move the window, it only does nothing about its size,
+        so the position is set here in the peer's own coordinate system - the same
+        one ``wizards/ui/UnoDialog.py`` centres its dialogs in.
+        """
+        area = None
+        parent = _parent_window(self.ctx)
+        if parent is not None:
+            try:
+                area = parent.getPosSize()
+            except Exception:
+                area = None
+        if area is None:
+            return
+        size = self.dialog.getPosSize()
+        x = max(0, area.X + (area.Width - size.Width) // 2)
+        y = max(0, area.Y + (area.Height - size.Height) // 2)
+        try:
+            self.dialog.setPosSize(x, y, size.Width, size.Height, _POS)
+        except Exception:
+            pass
 
     def _preselect_master(self):
-        wanted = self.values.get("master")
-        if not wanted or wanted not in self.masters:
-            return
-        try:
-            # SelectedItems is 0-based on the list box model.
-            self.control_model("Master").setPropertyValue(
-                "SelectedItems", uno.Any("[]short", (self.masters.index(wanted),)))
-        except Exception as error:
-            self._warnings.append("Master.SelectedItems: %s" % error)
+        """Deprecated shim: the selection is part of the model now.
+
+        ``SelectedItems`` set on an *inserted* child never reaches the peer, so it
+        has to travel with the control model - see ``_field_specs`` and
+        ``dev/debug_dialog_masters.py``.  Kept so older callers are harmless.
+        """
+        return _master_index(self.values, self.masters)
 
     # -- interaction ------------------------------------------------------- #
     def _press(self, name):
@@ -246,13 +349,15 @@ class SettingsDialog(object):
         outer = self
 
         class Buttons(unohelper.Base, XActionListener):
+            """One instance per button.  Deciding from ``event.Source.Model.Name``
+            has been seen to fail, which silently turned an OK into a cancel, so
+            each listener already knows which button it belongs to."""
+
+            def __init__(self, name):
+                self.name = name
+
             def actionPerformed(self, event):
-                name = "cancel"
-                try:
-                    name = str(event.Source.Model.Name)
-                except Exception:
-                    pass
-                outer._press("ok" if name == "ok" else "cancel")
+                outer._press(self.name)
 
             def disposing(self, event):
                 pass
@@ -280,22 +385,27 @@ class SettingsDialog(object):
             self.dialog.setTitle(TITLE)
         except Exception:
             pass
-        buttons = Buttons()
         for name in ("ok", "cancel"):
             control = self.control(name)
-            control.addActionListener(buttons)
-            self._listeners.append((control, buttons))
+            listener = Buttons(name)
+            control.addActionListener(listener)
+            self._listeners.append((control, listener))
         for field in _COLOUR_FIELDS:
             control = self.control(field)
             watcher = ColourWatcher(field)
             control.addTextListener(watcher)
             self._listeners.append((control, watcher))
-        self._preselect_master()
+        config.log(self.ctx, "settings dialog: %d controls, %dx%d units"
+                   % (len(self.model.ElementNames), *self._asked_size()))
         try:
             self.dialog.execute()
+            config.log(self.ctx, "settings dialog closed: accepted=%s" % self.accepted)
             return self.result() if self.accepted else None
         finally:
             self.dispose()
+
+    def _asked_size(self):
+        return (self.model.getPropertyValue("Width"), self.model.getPropertyValue("Height"))
 
     def _text(self, name):
         """Text of an edit control, with the model as fallback."""

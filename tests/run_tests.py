@@ -57,6 +57,18 @@ def colour_helpers():
 
 
 @test
+def profile_dir_comes_from_the_deployment():
+    """Where settings are stored must be the profile of the office running us."""
+    deployed = ("/opt/dev/loprofile/user/uno_packages/cache/uno_packages"
+                "/lu1abc.tmp_/plan-impress.oxt/plan_impress/config.py")
+    assert config._profile_from_path(deployed) == "/opt/dev/loprofile/user"
+    # a checkout is not a deployment: no "user/uno_packages" in the path
+    assert config._profile_from_path("/tmp/repo/src/plan_impress/config.py") is None
+    # and a profile directory that happens to be called "user" is not enough
+    assert config._profile_from_path("/home/x/user/documents/config.py") is None
+
+
+@test
 def point_size_conversion():
     """The pt <-> 1/100 mm conversion, without needing an office.
 
@@ -143,13 +155,85 @@ def dialog_field_specs():
     assert by_name["MutedColor"][1]["Text"] == "B0B0B0"
     assert by_name["Master"][0].endswith("UnoControlListBoxModel")
     assert by_name["Master"][1]["StringItemList"] == ("Default", "Dark")
+    # the master to show travels with the model: a selection set on the inserted
+    # child never reaches the peer, and the box stays empty
+    assert by_name["Master"][1]["SelectedItems"] == (0,), by_name["Master"][1]
+    gone = {name: dict(props) for name, _service, props
+            in dialog._field_specs(dict(values, master="No longer here"),
+                                   ["Default", "Dark"])}
+    assert gone["Master"]["SelectedItems"] == (0,), gone["Master"]
     assert by_name["swatchMutedColor"][1]["BackgroundColor"] == 0xB0B0B0
     assert by_name["swatchTextColor"][1]["BackgroundColor"] == 0x000000
-    # every control must sit inside the dialog
+    # the plan slide's heading is a named row of its own, not "Slide heading"
+    assert by_name["labelTitle"][1]["Label"] == "Plan slide title:", by_name["labelTitle"]
+    # and it is not capped: only the two hex fields are short
+    assert "MaxLen" not in by_name["Title"][1], by_name["Title"][1]
+    # every control must sit inside the dialog, with a size of its own
+    spots = {}
     for name, _service, props in specs:
         props = dict(props)
+        assert props["Width"] > 0 and props["Height"] > 0, (name, props)
         assert props["PositionX"] + props["Width"] <= dialog.DIALOG_WIDTH, name
         assert props["PositionY"] + props["Height"] <= dialog.DIALOG_HEIGHT, name
+        spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
+    # ... and no two of them may share a position: that is what "all the controls
+    # are stacked on top of each other" looks like in the specs.
+    shared = {spot: names for spot, names in spots.items() if len(names) > 1}
+    assert not shared, "controls sharing a position: %s" % shared
+
+
+@test
+def dialog_controls_are_laid_out_apart():
+    """The peer geometry of the real dialog: distinct, non-zero, inside the window.
+
+    The settings dialog used to open as a corner-sized window with every control
+    on top of the others, and no model-level assertion noticed, because the
+    controls were inserted without any geometry at all (their models came from the
+    service manager, which gives them no ``PositionX``/``Width`` properties).  This
+    checks what the user sees, measured on the native peers; the same thing by eye
+    is ``python3 dev/debug_dialog_form.py show 8`` plus a screenshot.
+    """
+    from plan_impress import dialog
+    ctx = lo.connect()
+    settings = dict(config.DEFAULTS)
+    settings.update({"muted_color": 0xB0B0B0, "text_color": 0x1F6EC8,
+                     "title": "Plan", "master": "Master2"})
+    window = dialog.SettingsDialog(ctx, settings, ["Master1", "Master2"])
+    window.build()
+    try:
+        window._peer()
+        size = window.dialog.getPosSize()
+        assert size.Width > 0 and size.Height > 0, "the dialog has no size"
+        # the window must follow the model rather than the 300x450 default, which
+        # the aspect ratio shows without depending on the display's scaling
+        wanted = dialog.DIALOG_WIDTH / float(dialog.DIALOG_HEIGHT)
+        got = size.Width / float(size.Height)
+        assert abs(got - wanted) / wanted < 0.15, (
+            "the window is %dx%d (ratio %.2f) but the model asks for %dx%d (ratio %.2f)"
+            % (size.Width, size.Height, got, dialog.DIALOG_WIDTH, dialog.DIALOG_HEIGHT,
+               wanted))
+        spots = {}
+        for name, _service, _props in dialog._field_specs(window.values, window.masters):
+            peer = window.control(name).getPosSize()
+            assert peer.Width > 0 and peer.Height > 0, "%s has no size: %r" % (name, peer)
+            assert peer.X >= 0 and peer.Y >= 0, "%s is off the window: %r" % (name, peer)
+            assert peer.X + peer.Width <= size.Width + 4, \
+                "%s sticks out on the right: %r in %r" % (name, peer, size)
+            assert peer.Y + peer.Height <= size.Height + 4, \
+                "%s sticks out at the bottom: %r in %r" % (name, peer, size)
+            spots.setdefault((peer.X, peer.Y), []).append(name)
+        shared = {spot: names for spot, names in spots.items() if len(names) > 1}
+        assert not shared, "controls drawn on top of each other: %s" % shared
+        # the labels really are next to their fields, not on top of them
+        for name, _service, _props in dialog._field_specs(window.values, window.masters):
+            if not name.startswith("label"):
+                continue
+            label = window.control(name).getPosSize()
+            field = window.control(name[len("label"):]).getPosSize()
+            assert label.X + label.Width <= field.X + 4, \
+                "%s overlaps its field: %r vs %r" % (name, label, field)
+    finally:
+        window.dispose()
 
 
 @test
@@ -172,7 +256,6 @@ def dialog_build_and_read_back():
         assert window.warnings == [], window.warnings
         # a native peer must attach without a visible window (Xvfb session)
         window._peer()
-        window._preselect_master()
         assert list(window.control("Master").getSelectedItems()) == ["Master2"], \
             list(window.control("Master").getSelectedItems())
         result = window.result()

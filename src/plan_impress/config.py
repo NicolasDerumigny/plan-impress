@@ -27,23 +27,66 @@ DEFAULTS = {
 }
 
 
-def _profile_dir(ctx):
-    """Directory holding the extension's own data, created on demand."""
-    base = None
-    try:
-        sub = ctx.ServiceManager.createInstanceWithContext(
-            "com.sun.star.util.PathSubstitution", ctx)
-        base = sub.getSubstitutedValue("$(user)")
-    except Exception:
-        base = None
-    if not base:
-        base = os.path.expanduser("~/.config/libreoffice/4/user")
+def _profile_from_path(path):
+    """``<profile>/user`` taken from a deployed extension's own path, or None.
+
+    An extension installed for the user lives in
+    ``<profile>/user/uno_packages/cache/...``, so its own module path says which
+    profile the running office uses - including a non-default one from
+    ``-env:UserInstallation``, which no amount of asking the office through pyuno
+    revealed (``PathSettings.User`` and ``PathSubstitution`` are both unreachable
+    there, ``AttributeError``).
+    """
+    parts = os.path.abspath(path).split(os.sep)
+    for index in range(len(parts) - 1):
+        if parts[index] == "user" and parts[index + 1] == "uno_packages":
+            return os.sep.join(parts[:index + 1]) or os.sep
+    return None
+
+
+def _profile_from_package():
+    return _profile_from_path(__file__)
+
+
+def _user_profile(ctx):
+    """The user profile of the office this code runs in, as a system path.
+
+    Getting this wrong is not cosmetic: with the hard-coded fallback the
+    extension reads and writes its settings in *some other* LibreOffice's
+    profile, so saving appears to do nothing.
+    """
     import uno
-    if base.startswith("file://"):
-        path = uno.fileUrlToSystemPath(base)
-    else:
-        path = base
-    folder = os.path.join(path, "planimpress")
+    candidates = [_profile_from_package()]
+    try:
+        candidates.append(ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.util.PathSettings", ctx).User)
+    except Exception:
+        pass
+    try:
+        substitution = ctx.ServiceManager.createInstanceWithContext(
+            "com.sun.star.util.PathSubstitution", ctx)
+        candidates.append(substitution.getSubstitutedValue("$(user)"))
+    except Exception:
+        pass
+    for base in candidates:
+        if not base:
+            continue
+        path = uno.fileUrlToSystemPath(base) if "://" in base else base
+        if os.path.isabs(path):
+            return path
+    return os.path.join(os.path.expanduser("~"), ".config", "libreoffice", "4", "user")
+
+
+def _profile_dir(ctx):
+    """Directory holding the extension's own data, created on demand.
+
+    ``PLAN_IMPRESS_DATA_DIR`` overrides it, which matters for the scripts in
+    ``dev/``: they run *outside* the office, where the deployment path that
+    normally identifies the profile does not exist.
+    """
+    override = os.environ.get("PLAN_IMPRESS_DATA_DIR")
+    folder = (override if override and os.path.isabs(override)
+              else os.path.join(_user_profile(ctx), "planimpress"))
     if not os.path.isdir(folder):
         os.makedirs(folder)
     return folder
