@@ -135,6 +135,46 @@ def point_size_conversion():
 
 
 @test
+def list_label_follows_the_template():
+    """Which label the rows get, from the template's own level - and no office.
+
+    The plan list takes the label style the deck counts with, so a deck whose outline
+    says ``I. II. III.`` gets roman numerals; only a template that does not count at
+    all - a bullet character, a bitmap, the slide's own number, no label - gets digits
+    instead, and then the two properties that size and place *a glyph* have to be
+    corrected (:func:`_number_list`).  The integers are the measured ones, which is
+    what makes this worth pinning: ``ARABIC`` is 4, not 5, and 1 is a letter.
+    """
+    class Entry(object):
+        def __init__(self, name, value):
+            self.Name, self.Value = name, value
+
+    class Level(object):
+        """A one-level ``NumberingRules`` stand-in."""
+
+        def __init__(self, **level):
+            self.entries = [Entry(name, value) for name, value in level.items()]
+
+        def getByIndex(self, index):
+            return self.entries if index == 0 else []
+
+    arabic = core._numbering_type_arabic()
+    assert arabic == 4, arabic
+    for counting in (core._numbering_constant("ROMAN_UPPER", 2),
+                     core._numbering_constant("ROMAN_LOWER", 3),
+                     core._numbering_constant("CHARS_LOWER_LETTER", 1),
+                     arabic):
+        assert core._list_label_type(Level(NumberingType=counting)) == (counting, False)
+    glyph_labels = list(core.CHARACTER_LABELS) + [
+        core._numbering_constant("PAGE_DESCRIPTOR", 7),
+        core._numbering_constant("NUMBER_NONE", 5), 0, None, "four"]
+    for uncounted in glyph_labels:
+        assert core._list_label_type(Level(NumberingType=uncounted)) == (arabic, True), (
+            uncounted)
+    assert core._list_label_type(None) == (arabic, True)
+
+
+@test
 def settings_roundtrip(tmp_path=os.path.join(ROOT, "out", "profile-test")):
     os.makedirs(tmp_path, exist_ok=True)
     fake_ctx = FakeContext(tmp_path)
@@ -728,25 +768,30 @@ def plan_slides_use_the_template_placeholders():
                 core._text_anchor(title)), (name, body.Position.Y, title.Position,
                                             title.Size.Height, title.CharHeight)
 
-            # the list style is the template's own, with only the label replaced:
-            # the bullet font, size, indentation and label colour are what makes the
+            # the list style is the template's own, with only the label replaced -
+            # and the label itself is the template's too wherever it counts: the
+            # bullet font, size, indentation and label colour are what makes the
             # number look like it belongs on the slide
             rules = dict((p.Name, p.Value)
                          for p in body.NumberingRules.getByIndex(0))
             master_level = _level(core._numbering_rules(template_body))
-            assert rules["NumberingType"] == core._numbering_type_arabic(), (
-                name, rules)
+            wanted_type, wanted_extra, substituted = core._template_label(
+                doc, master, template_body)
+            assert rules["NumberingType"] == wanted_type, (
+                name, rules["NumberingType"], master_level.get("NumberingType"))
             for attribute in ("Prefix", "Suffix", "BulletFont", "LeftMargin",
                               "StartWith", "Adjust"):
+                if attribute in wanted_extra:
+                    continue    # taken from the level whose numerals are used
                 assert rules.get(attribute) == master_level.get(attribute), (
                     name, attribute, rules.get(attribute), master_level.get(attribute))
-            # the two properties that are *not* inherited when the template draws
-            # a character: it sizes that glyph (45 % of the text height here) and
+            # the two properties that are *not* inherited when a digit was invented
+            # for a glyph: it sizes that glyph (45 % of the text height here) and
             # pulls it into the margin, which makes an unreadable digit glued to
             # the text - a number is text, so never smaller than it, and it gets
             # the block's own left edge as its column.  SymbolTextDistance cannot
             # be set on its own (writes are ignored) and follows FirstLineOffset.
-            if master_level.get("NumberingType") in core.CHARACTER_LABELS:
+            if substituted:
                 assert rules.get("BulletRelSize") == max(
                     int(master_level.get("BulletRelSize") or 100), 100), (
                     name, rules.get("BulletRelSize"))
@@ -822,6 +867,111 @@ def plan_slides_use_the_template_placeholders():
         labels = [core._level_value(para.NumberingRules, "BulletColor")
                   for para in _paragraphs(body)]
         assert labels == [0xCBCBCB, current_bullet, 0xCBCBCB], (labels, template_bullet)
+    finally:
+        lo.close(doc)
+
+
+@test
+def plan_rows_are_numbered_the_way_the_template_numbers():
+    """The rows count the way the deck's own list does - roman, letters, digits.
+
+    The label used to be forced to ``NumberingType.ARABIC``, which put ``1. 2. 3.``
+    on a deck whose outline counts ``I. II. III.``: the one thing on the slide the
+    template already has a style for was the one thing that disagreed with it.  Here
+    the deck's content placeholder is turned into a roman list and the plan rows have
+    to follow it, ``Suffix`` included - and keep the ``BulletRelSize`` and
+    ``FirstLineOffset`` the template gives its own label, wrong as those look for a
+    bullet.  Only where the template draws no label at all do digits go in, and then
+    the two properties that size and place *a glyph* are corrected: a digit is not a
+    decorative character, so it is never smaller than the text and gets its column.
+
+    The third case is the one a real deck actually has: its content level draws a
+    glyph (so nothing there counts) while its **title** level counts - a template
+    keeps its numbering format with the heading, not with the body - so the rows have
+    to follow the title's numerals and its suffix.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    roman = core._numbering_constant("ROMAN_UPPER", 2)
+    no_label = core._numbering_constant("NUMBER_NONE", 5)
+    try:
+        def relabel(numbering_type, suffix, wanted=None):
+            """Make every placeholder of the deck (content, or ``wanted``) count so."""
+            wanted = wanted or core._is_content
+            changed = 0
+            for container in (doc.MasterPages, doc.DrawPages):
+                for i in range(container.Count):
+                    for shape in core._text_shapes(container.getByIndex(i)):
+                        if not wanted(shape):
+                            continue
+                        rules = core._copy_numbering(
+                            doc, core._numbering_rules(shape))
+                        # 80 % and an offset that is not -LeftMargin: a label tuned
+                        # for the template's own glyph, which a *copied* label keeps
+                        # and a *substituted* digit has to correct
+                        core._patch_level(rules, {"NumberingType": numbering_type,
+                                                  "Suffix": suffix,
+                                                  "BulletRelSize": 80,
+                                                  "LeftMargin": 1200,
+                                                  "FirstLineOffset": -400})
+                        shape.NumberingRules = rules
+                        changed += 1
+            assert changed, "the fixture has no placeholder to relabel"
+
+        relabel(roman, ".")
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        pages = [page for _index, page in _plan_pages(doc)]
+        assert pages, core.page_names(doc)
+        # what the deck now says about its own list, from the placeholder the plan
+        # slides copy their look from (the deck's slides, the master underneath)
+        template_body = core._style_source(doc, core._master_page(doc, ""))[1]
+        assert template_body is not None, "the fixture has no content placeholder"
+        template_level = _level(core._numbering_rules(template_body))
+        assert template_level["NumberingType"] == roman, template_level
+        for page in pages:
+            level = _level(core._numbering_rules(core._body_shape(page)))
+            assert level["NumberingType"] == roman, (page.Name, level)
+            assert level["Suffix"] == ".", (page.Name, level)
+            # the label is the template's, so its size and its column are too
+            for attribute in ("BulletRelSize", "FirstLineOffset", "LeftMargin"):
+                assert level[attribute] == template_level[attribute], (
+                    page.Name, attribute, level, template_level)
+
+        # no label at all: only now is a number invented, and then it has to be a
+        # readable one - full height, and a column of its own
+        relabel(no_label, "")
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        for page in [page for _index, page in _plan_pages(doc)]:
+            level = _level(core._numbering_rules(core._body_shape(page)))
+            assert level["NumberingType"] == core._numbering_type_arabic(), (
+                page.Name, level)
+            assert level["BulletRelSize"] == 100, (page.Name, level)
+            assert level["FirstLineOffset"] == -level["LeftMargin"], (page.Name, level)
+
+        # ... unless the deck counts somewhere else, which is how decks are: this
+        # one draws a glyph in the body and keeps its numerals in the heading
+        relabel(roman, ")", wanted=core._is_title)
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        title_level = _level(core._numbering_rules(
+            core._deck_placeholder(doc, core._master_page(doc, ""), core._is_title)))
+        assert title_level["NumberingType"] == roman, title_level
+        rows = [page for _index, page in _plan_pages(doc)]
+        assert rows, core.page_names(doc)
+        for page in rows:
+            level = _level(core._numbering_rules(core._body_shape(page)))
+            assert level["NumberingType"] == roman, (page.Name, level)
+            # the literal text around the number belongs to the format as much as
+            # the numerals do, so it comes from the same level
+            assert level["Suffix"] == ")", (page.Name, level)
+            # ... but the *placement* stays the body's own, and a counting label put
+            # into a level that drew a glyph is corrected to be readable: full height
+            # and a column of its own (the heading's 80 % / -400 belong to a heading)
+            body_level = _level(core._numbering_rules(template_body))
+            assert level["LeftMargin"] == body_level["LeftMargin"], (page.Name, level)
+            assert level["BulletRelSize"] == max(
+                int(body_level["BulletRelSize"] or 100), 100), (page.Name, level)
+            assert level["FirstLineOffset"] == -level["LeftMargin"], (page.Name, level)
     finally:
         lo.close(doc)
 
@@ -1200,13 +1350,146 @@ def master_slide_is_used():
         for page in plan:
             assert page.MasterPage.Name == "PlanMaster", page.MasterPage.Name
         settings["master"] = "DoesNotExist"
-        try:
-            core.insert_plan(doc, settings, ctx)
-        except core.PlanError as error:
-            assert "DoesNotExist" in str(error), error
-        else:
-            raise AssertionError("expected a PlanError for a missing master page")
+        # Not an error, and it must not be: the settings are stored **per profile**,
+        # so the master named there was picked in whichever presentation was open
+        # last, and a deck without a master of that name is the normal case.  It used
+        # to refuse - "Insert Plan Slides does nothing in the second deck until I
+        # open Settings", which offered only the masters of the deck in front.
+        report = core.insert_plan(doc, settings, ctx)
+        assert report["master_named"] is False, report
+        pages = doc.DrawPages
+        plan = [pages.getByIndex(i) for i in range(pages.Count)
+                if str(pages.getByIndex(i).Name).startswith(core.PLAN_PREFIX)]
+        assert plan, core.page_names(doc)
+        for page in plan:
+            # the deck's own master, not the one the other deck called up
+            assert page.MasterPage.Name == "Default", (page.Name, page.MasterPage.Name)
+        assert report["master"] == "Default", report
     finally:
+        lo.close(doc)
+
+
+@test
+def insert_plan_leaves_nothing_behind_when_it_fails():
+    """A run that stops half way has to be invisible in the deck afterwards.
+
+    Three places this used to go wrong, all of them *after* the first page existed:
+    the move commands give up (and the page they inserted stays in the deck, empty,
+    because ``insert_page_at`` raises after ``insertNewByIndex``), a slide cannot be
+    filled, and the section list comes back wrong.  Each left generated slides in the
+    deck with the section ranges of the deck *without* them, so the sections no longer
+    matched the slides and the next run had to clean up a wreck instead of a deck -
+    measured as three sections coming back as one, the "inserting into the second deck
+    leaves empty slides and loses sections" report (``dev/debug_two_documents.py``).
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    real = (core.insert_page_at, core.build_plan_slide, core._check_sections)
+    try:
+        names = core.page_names(doc)
+        sections = [(s["name"], s["indexes"]) for s in core.get_sections(doc)]
+
+        def check_clean(what):
+            assert core.page_names(doc) == names, (what, core.page_names(doc), names)
+            back = [(s["name"], s["indexes"]) for s in core.get_sections(doc)]
+            assert back == sections, (what, back, sections)
+            assert core.remove_plan(doc) == 0, (what, core.page_names(doc))
+
+        # 1. the move commands give up on the second page: that page exists already
+        state = {"n": 0}
+
+        def moves_that_give_up(d, index, name, c=None):
+            state["n"] += 1
+            page = real[0](d, index, name, c)
+            if state["n"] == 2:
+                raise core.PlanError("simulated: the page stayed where it was")
+            return page
+
+        core.insert_page_at = moves_that_give_up
+        try:
+            core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+            raise AssertionError("the move failure was swallowed")
+        except core.PlanError as error:
+            assert "simulated" in str(error), error
+        finally:
+            core.insert_page_at = real[0]
+        check_clean("move commands gave up")
+
+        # 2. the third slide cannot be built at all
+        state = {"n": 0}
+
+        def slide_that_fails(d, page, section_names, current, settings, footer=None,
+                             master=None):
+            state["n"] += 1
+            if state["n"] == 3:
+                raise RuntimeError("simulated: the placeholders could not be filled")
+            return real[1](d, page, section_names, current, settings, footer, master)
+
+        core.build_plan_slide = slide_that_fails
+        try:
+            core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+            raise AssertionError("the build failure was swallowed")
+        except RuntimeError as error:
+            assert "simulated" in str(error), error
+        finally:
+            core.build_plan_slide = real[1]
+        check_clean("a slide could not be built")
+
+        # 3. the sections came back wrong, which is reported instead of hidden
+        def sections_that_refuse(sections_, expected_, names_):
+            raise core.PlanError("simulated: the sections do not match the slides")
+
+        core._check_sections = sections_that_refuse
+        try:
+            core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+            raise AssertionError("the section failure was swallowed")
+        except core.PlanError as error:
+            assert "simulated" in str(error), error
+        finally:
+            core._check_sections = real[2]
+        check_clean("the sections came back wrong")
+    finally:
+        core.insert_page_at, core.build_plan_slide, core._check_sections = real
+        lo.close(doc)
+
+
+@test
+def remove_plan_loses_no_slide_of_a_half_finished_deck():
+    """Removing plan slides from a deck whose section list lost track of them.
+
+    The wreck a failed run used to leave behind: generated slides inside the sections
+    while the list still describes the deck without them - here produced on purpose by
+    making the run skip the section rewrite, which :func:`insert_plan` no longer can.
+    ``remove_plan`` cannot restore boundaries the document no longer has, so what it
+    *does* have to guarantee is that nothing else is damaged: every slide of the deck
+    survives, every generated slide goes, and what the sections say afterwards is
+    still a list of runs inside the deck.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    real_set, real_check = core.set_sections, core._check_sections
+    try:
+        names = core.page_names(doc)
+        core.set_sections = lambda d, sections: []
+        core._check_sections = lambda *args: None      # let the run "succeed"
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        core.set_sections, core._check_sections = real_set, real_check
+        pages = doc.DrawPages
+        doomed = [i for i in range(pages.Count) if core._is_plan_page(pages.getByIndex(i))]
+        assert doomed, "the wreck was not built: %r" % (core.page_names(doc),)
+        assert core.remove_plan(doc) == len(doomed), core.page_names(doc)
+        assert core.page_names(doc) == names, (core.page_names(doc), names)
+        for section in core.get_sections(doc):
+            indexes = section["indexes"]
+            assert indexes, (section["name"], core.get_sections(doc))
+            assert indexes == list(range(indexes[0], indexes[-1] + 1)), (
+                section["name"], indexes)
+            assert 0 <= indexes[0] and indexes[-1] < pages.Count, (
+                section["name"], indexes)
+    finally:
+        core.set_sections, core._check_sections = real_set, real_check
         lo.close(doc)
 
 
@@ -1356,26 +1639,63 @@ def settings_job_saves():
                 handle.write(backup)
 
 
-def main():
-    only = sys.argv[1] if len(sys.argv) > 1 else None
-    failed = skipped = 0
-    for name, function in RESULTS:
-        if only and only not in name:
-            continue
+def _run_with_recovery(name, function):
+    """Run one test against a live office: ``(outcome, report, restarts)``.
+
+    The office takes the whole document model - and with it the test - down when it
+    dies, and a long UI session does kill it now and then: ``free(): invalid
+    pointer`` in ``cppu::OWeakAggObject::release`` inside ``libeditenglo``, while
+    pyuno lets go of a text object whose document is already gone
+    (``out/soffice.log`` keeps the stack).  It is LibreOffice going away under load,
+    not the extension refusing - a second pass of this suite over the *committed*
+    code does it too, on decks the extension never touched - and without a retry one
+    death reads as eighteen failures.  So a test that died with the office gets one
+    retry on a fresh one; a test that fails twice has failed.
+
+    ``report`` is the reason for a ``"skip"`` or the ``(error, traceback)`` of a
+    ``"fail"``, the text taken here because ``sys.exc_info()`` is empty by the time
+    the caller prints it.
+    """
+    restarts = 0
+    for attempt in (0, 1):
+        if not lo.is_alive():
+            lo.restart()
+            restarts += 1
+            print("     %s  the office was gone: started a new one%s"
+                  % (name, ", trying the test again" if attempt else ""))
         try:
             function()
         except Skip as reason:
-            skipped += 1
-            print("SKIP %-38s %s" % (name, reason))
+            return "skip", reason, restarts
         except Exception as error:
+            if attempt == 0 and lo.died():
+                continue
+            return "fail", (error, traceback.format_exc()), restarts
+        return "ok", None, restarts
+
+
+def main():
+    only = sys.argv[1] if len(sys.argv) > 1 else None
+    failed = skipped = restarts = 0
+    for name, function in RESULTS:
+        if only and only not in name:
+            continue
+        outcome, value, lost = _run_with_recovery(name, function)
+        restarts += lost
+        if outcome == "skip":
+            skipped += 1
+            print("SKIP %-38s %s" % (name, value))
+        elif outcome == "fail":
             failed += 1
+            error, where = value
             print("FAIL %-38s %s" % (name, error))
-            traceback.print_exc()
+            print(where)
         else:
             print("ok   %-38s" % name)
     total = len([1 for name, _ in RESULTS if not only or only in name])
-    print("\n%d passed, %d failed, %d skipped (of %d)"
-          % (total - failed - skipped, failed, skipped, total))
+    print("\n%d passed, %d failed, %d skipped (of %d)%s"
+          % (total - failed - skipped, failed, skipped, total,
+             "" if not restarts else ", office restarted %d time(s)" % restarts))
     return 1 if failed else 0
 
 

@@ -42,6 +42,9 @@ make install    # stop office, package src/, unopkg add, start office
 python3 tests/run_tests.py <substring>     # run a subset of the tests
 python3 dev/open_fixture.py   # open the fixture in the dev office, for a UI check
 python3 dev/render_plan.py    # insert with the *saved* settings, export PDF + PNGs
+dev/run_one_test.sh <substring>   # one test on a fresh office: says if soffice survived
+python3 dev/debug_two_documents.py  # two decks, one shared settings file (fact 58)
+python3 dev/debug_rollback.py --case moves|build|check   # a run that stops half way
 ```
 
 `make test`/`make install` need `DISPLAY` pointing at a live X server (the dev
@@ -458,6 +461,72 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
     `CENTER`, box bottom for `BOTTOM`. Comparing against the box's top let the list
     overlap the heading on the fixture (its title box spans 1575..4725 while its
     body box starts at 3685).
+57. **The deck's numbering format lives with the heading, not with the body.** The
+    first `NumberingType` that is worth copying is the content level's own; where that
+    level draws a glyph instead of counting, the deck is asked in the order deck
+    content, deck **title**, master content, master title (`_label_sources`) — a
+    template keeps its numerals in the heading and its decoration in the body, and on
+    the deck this was measured on the content level is `CHAR_SPECIAL` with an OpenSymbol
+    arrow while the title level counts `ROMAN_UPPER` with a `.` suffix
+    (`style:num-format="I"` in `content.xml`). Taking the label from another level
+    takes its `Prefix` and `Suffix` with it — the text around the number is the format
+    as much as the numerals are — but *not* its `LeftMargin`, `FirstLineOffset` or
+    `BulletRelSize`, which belong to a heading. The measured `NumberingType` values are
+    `CHARS_UPPER_LETTER 0, CHARS_LOWER_LETTER 1, ROMAN_UPPER 2, ROMAN_LOWER 3, ARABIC 4,
+    NUMBER_NONE 5, CHAR_SPECIAL 6, PAGE_DESCRIPTOR 7, BITMAP 8`; nothing in
+    `(6, 8, 0, 5, 7)` counts (`_uncounted_labels`), so only those get digits. The size
+    and column correction of fact 50 belongs to *that* case alone: when the label is the
+    template's own, whatever it asks for stays.
+
+### Working on two documents in one office (`insert_plan`)
+
+58. **The settings are per profile, so the master they name is usually another
+    deck's.** A `master` that this document has no master page for is *not* an error —
+    it means "the deck's own", exactly like the empty setting (`_master_page` falls back
+    to `_default_master`). Refusing there is the report "inserting plan slides does
+    nothing in the second deck until I open *Settings*": the office logs it as
+    `Master slide 'Blue_Curve1' no longer exists`, and *Settings* appeared to fix it
+    because its master list is filled from the deck in front, so saving there wrote a
+    name that deck has. `insert_plan` reports which master it used and whether the
+    settings named one this deck has (`master`, `master_named`). `_default_master()`
+    counts the masters of the deck's *own* slides and ignores generated ones, or the
+    second run picks what the first one's slides used instead of what the deck uses.
+59. **`insert_plan` is all-or-nothing.** Everything that can refuse is settled before
+    the deck is touched — the master above all, which used to be resolved once *per
+    generated slide*, i.e. after pages had been inserted — and any later failure goes
+    through `_drop_pages()`: every generated slide out (all of them, not just the ones
+    that were reported inserted: `insert_page_at` raises *after* `insertNewByIndex`) and
+    the section list written back the snapshot taken after the initial
+    `remove_plan_slides()`. A deck left half-inserted has empty slides in it and sections
+    that no longer match its slides, and the next run then cleans a wreck instead of a
+    deck — measured as three sections coming back as one (`dev/debug_two_documents.py`,
+    `dev/debug_rollback.py`). It is *not* the move commands losing the second deck's
+    page: `dev/debug_move_race.py` inserts and removes the plan slides over six rounds
+    with another deck open and loses nothing, worst case one dispatch round.
+    `remove_plan_slides()` does **nothing at all** when there is nothing to delete,
+    because writing `SlideSections` normalises the deck (fact 17) and a run that was
+    only looking for old slides must not move a boundary.
+
+### The dev office under a long test run
+
+60. **A long UI session takes the office down, and it is not the extension.** Once a
+    few dozen documents have been loaded, moved and closed, soffice dies of
+    `free(): invalid pointer` / `Fatal exception: Signal 11`, the stack going from
+    `libbinaryurplo` through `cppu::OWeakAggObject::release` into `libeditenglo` — pyuno
+    letting go of a text object whose document is already gone. It is LibreOffice under
+    load, not this code: running the *committed* suite a second time in the same office
+    process does it too, on documents the extension never sees. Where the death lands is
+    a matter of luck, and everything after it fails with `cannot connect to soffice`, so
+    `tests/run_tests.py` notices the office has gone (`lo.is_alive()`, `lo.died()` — the
+    socket stays open for a moment after the process starts to die, which is why both the
+    `/proc` command line and the port are checked), starts a new one and gives that test
+    its one retry; a test that fails twice has failed. Nothing is hidden: the run ends
+    with `office restarted N time(s)`.
+61. **A load right after a start answers with a *null* document.** The office answers
+    its UNO socket before the desktop can create a document, and
+    `loadComponentFromURL()` then returns a null proxy instead of raising; the caller's
+    first property read is the unhelpful `cannot get value DrawPages`. `lo._load()` waits
+    for the proxy to answer `getURL()` before handing it over.
 
 ## Testing notes
 
@@ -484,9 +553,19 @@ their rectangles, the list clearing the painted heading, the inherited list leve
 with only the label replaced, the characters mirrored down to the paragraphs, the
 number of a dimmed row dimmed with it; and `plan_slides_copy_the_deck_own_slides`,
 where the master is left alone and the slides moved instead, so anything taken
-from the master shows up as a failure), idempotency and clean removal, the
-master-slide setting, `Addons.xcu` registration read back through the
-configuration provider, and the `service:` URL dispatch path a menu click takes.
+from the master shows up as a failure), the label the rows are numbered with
+(`plan_rows_are_numbered_the_way_the_template_numbers`: the deck's own counting
+level with its `Suffix`, its size and its column kept; digits only where nothing
+counts, then corrected to be readable; and the numerals taken from the *heading's*
+level when the body draws a glyph — `list_label_follows_the_template` pins the
+same rule without an office), that a named master the deck does not have means the
+deck's own (`master_slide_is_used`), that a run which stops half way leaves neither
+a slide nor a section boundary behind
+(`insert_plan_leaves_nothing_behind_when_it_fails`, at the three places it can
+stop), that removing the slides of such a wreck loses nothing of the deck,
+idempotency and clean removal, the master-slide setting, `Addons.xcu` registration
+read back through the configuration provider, and the `service:` URL dispatch path a
+menu click takes.
 
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),

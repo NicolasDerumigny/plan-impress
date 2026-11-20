@@ -448,6 +448,32 @@ def remove_plan_slides(doc):
     return len(doomed)
 
 
+def _drop_pages(doc, sections):
+    """Delete every slide this extension made and put ``sections`` back.
+
+    Only used to undo a run that stopped half way, which otherwise leaves the deck
+    with plan slides in it and the section ranges that described the deck *without*
+    them: empty slides the audience has to skip, and sections that no longer match
+    the slides - the report "inserting into the second deck leaves empty slides and
+    loses sections".  Every plan slide in the deck came from the failed run, because
+    :func:`insert_plan` deleted the older ones before it started; and it has to be
+    every one of them, not just the ones that were reported inserted: the move
+    commands fail *after* the page exists, which is precisely the case this undoes.
+    After this the deck is as it was before the run started.
+    """
+    pages = doc.DrawPages
+    doomed = [i for i in range(pages.Count) if _is_plan_page(pages.getByIndex(i))]
+    for index in reversed(doomed):
+        try:
+            pages.remove(pages.getByIndex(index))
+        except Exception:
+            pass
+    try:
+        set_sections(doc, sections)
+    except Exception:
+        pass
+
+
 # --------------------------------------------------------------------------- #
 # slide content
 # --------------------------------------------------------------------------- #
@@ -463,7 +489,10 @@ def _default_master(doc):
     pages = doc.DrawPages
     for i in range(pages.Count):
         try:
-            name = str(pages.getByIndex(i).MasterPage.Name)
+            page = pages.getByIndex(i)
+            if _is_plan_page(page):
+                continue            # a previous run's slides are not the deck's own
+            name = str(page.MasterPage.Name)
         except Exception:
             continue
         counts[name] = counts.get(name, 0) + 1
@@ -477,7 +506,16 @@ def _default_master(doc):
 
 
 def _master_page(doc, wanted):
-    """The master slide to base plan slides on: by name, else the deck's own."""
+    """The master slide to base plan slides on: by name, else the deck's own.
+
+    A name that this deck has no master for means "the deck's own", like the empty
+    setting does.  It is *not* an error: the settings are stored **per profile**, so
+    the master picked while working on one presentation is what every other
+    presentation in this LibreOffice is asked for, and a deck without a master of
+    that name is the normal case.  Refusing there is the report "Insert Plan Slides
+    does nothing in the second deck until I open Settings" - Settings offered only
+    the masters of the deck in front, so saving there is what made it work.
+    """
     masters = doc.MasterPages
     if not masters.Count:
         raise PlanError("This presentation has no master slides.")
@@ -485,7 +523,6 @@ def _master_page(doc, wanted):
         for i in range(masters.Count):
             if masters.getByIndex(i).Name == wanted:
                 return masters.getByIndex(i)
-        raise PlanError("Master slide '%s' no longer exists." % wanted)
     return _default_master(doc)
 
 
@@ -891,6 +928,23 @@ def _level_value(rules, name, default=None):
     return default
 
 
+def _numbering_constant(name, fallback):
+    """One ``com.sun.star.style.NumberingType`` constant as the integer it is.
+
+    The numbers are worth nothing to read (``ARABIC`` is 4, ``CHARS_LOWER_LETTER``
+    1, ``CHAR_SPECIAL`` 6, ``NUMBER_NONE`` 5 - and ``CHARS_UPPER_LETTER`` 0, which
+    nevertheless paints no label at all), the constants are only loaded inside the
+    office, and a value pyuno marshals from a *string* arrives as 0, so every
+    caller takes them from the constants where they are there and from the
+    measured integer otherwise.
+    """
+    try:
+        from com.sun.star.style import NumberingType
+        return int(getattr(NumberingType, name))
+    except Exception:
+        return fallback
+
+
 def _numbering_type_arabic():
     """``NumberingType.ARABIC``, taken from the constants when they are loaded.
 
@@ -899,11 +953,7 @@ def _numbering_type_arabic():
     label was guessed at.  It has to be an ``int``: a string is stored as 0,
     which draws no number at all and leaves only the literal prefix behind.
     """
-    try:
-        from com.sun.star.style import NumberingType
-        return int(NumberingType.ARABIC)
-    except Exception:
-        return 4
+    return _numbering_constant("ARABIC", 4)
 
 
 #: Character *and* text-box attributes copied from the master's placeholder onto
@@ -995,34 +1045,121 @@ def _patch_level(rules, overrides):
 CHARACTER_LABELS = (6, 8)
 
 
-def _number_list(doc, shape, template_rules=None, bullet_colors=None):
+def _uncounted_labels():
+    """The label styles a plan list cannot copy, because they do not count.
+
+    ``CHAR_SPECIAL`` and ``BITMAP`` draw the glyph the template picked - a bullet
+    says nothing about which of seven sections the audience is in - ``PAGE_DESCRIPTOR``
+    prints the *slide's* number on every row, ``NUMBER_NONE`` draws no label and 0
+    paints nothing although the constants call it ``CHARS_UPPER_LETTER``.
+    """
+    return tuple(CHARACTER_LABELS) + (
+        0,
+        _numbering_constant("NUMBER_NONE", 5),
+        _numbering_constant("PAGE_DESCRIPTOR", 7))
+
+
+def _counts_labels(value):
+    """True when a ``NumberingType`` counts (digits, roman, letters) rather than
+    drawing a glyph or nothing (see :func:`_uncounted_labels`)."""
+    try:
+        return int(value) not in _uncounted_labels()
+    except (TypeError, ValueError):
+        return False
+
+
+def _list_label_type(rules):
+    """How one list level labels its rows: ``(NumberingType, substituted)``.
+
+    The level's own style wins wherever it counts, so a deck whose outline says
+    ``I. II. III.`` numbers its plan rows with roman numerals and one that says
+    ``a) b) c)`` with letters: the label is the one thing on the slide the deck
+    already has a style for, and digits next to a deck's own roman list is what made
+    the slide look re-created.  ``(ARABIC, True)`` comes back when the level draws a
+    bullet or nothing at all - a digit then has to be invented, and the two properties
+    that size and place *a glyph* have to be re-asked for, because they were tuned for
+    a small decorative character and not for a number (see :func:`_number_list`).
+    """
+    wanted = _level_value(rules, "NumberingType")
+    if _counts_labels(wanted):
+        return int(wanted), False
+    return _numbering_type_arabic(), True
+
+
+def _label_sources(doc, master, body):
+    """The placeholders whose first level says how the deck numbers its items.
+
+    A content placeholder is not where a template keeps its numbering format: the deck
+    this was measured on draws an OpenSymbol arrow (``CHAR_SPECIAL``) in its content
+    placeholder while its **title** placeholder counts ``I. II. III.`` - so copying the
+    content level alone put arabic digits on a deck that does not use them anywhere.
+    The deck's own slides are asked before the master page, as always.
+    """
+    out = []
+    for shape in (_deck_placeholder(doc, master, _is_content),
+                  _deck_placeholder(doc, master, _is_title),
+                  _body_shape(master), _title_shape(master)):
+        if shape is not None:
+            out.append(shape)
+    return out
+
+
+def _template_label(doc, master, body):
+    """The label style of the plan list: ``(NumberingType, overrides, substituted)``.
+
+    First the level the list is drawn with, if it counts; then the first level of the
+    deck's own placeholders that does count (:func:`_label_sources`) - taking its
+    ``Prefix`` and ``Suffix`` with it, because the literal text around the number is as
+    much the deck's format as the numerals are; and only when nothing in the deck
+    counts at all, plain digits.  ``substituted`` says a digit was invented for a
+    glyph, which is when :func:`_number_list` corrects the size and the column of the
+    label.
+    """
+    label, substituted = _list_label_type(_numbering_rules(body))
+    if not substituted:
+        return label, {}, substituted
+    for shape in _label_sources(doc, master, body):
+        rules = _numbering_rules(shape)
+        wanted = _level_value(rules, "NumberingType")
+        if _counts_labels(wanted):
+            return int(wanted), {
+                "Prefix": _level_value(rules, "Prefix", ""),
+                "Suffix": _level_value(rules, "Suffix", ""),
+            }, True
+    return _numbering_type_arabic(), {}, True
+
+
+def _number_list(doc, shape, template_rules=None, bullet_colors=None, label=None,
+                 label_overrides=None, substituted=None):
     """Draw the paragraphs of ``shape`` as the master's first list level.
 
-    The master's own level is copied and **only** ``NumberingType`` is replaced,
-    so the number comes in the template's bullet font, with its indentation, its
-    ``Prefix``/``Suffix``, its tab stops and its label colour: measured in
-    ``dev/debug_numbering.py``, a rules object built from scratch gave the digits
-    a font, a size, a gap and a colour of their own, which is what made the list
+    The master's own level is copied and only the label is replaced - with the style
+    the deck counts with (:func:`_template_label`), or with digits where nothing in the
+    deck counts at all - so the number comes in the template's bullet font, with its
+    indentation, its ``Prefix``/``Suffix``, its tab stops and its label colour:
+    measured in ``dev/debug_numbering.py``, a rules object built from scratch gave the
+    digits a font, a size, a gap and a colour of their own, which is what made the list
     look foreign on the slide.  Three things about these rules are measured there
-    as well: ``NumberingType`` has to be the integer of ``NumberingType.ARABIC``
-    (a value pyuno marshals from a string arrives as 0, i.e. no number at all,
-    and ``1`` is ``CHARS_LOWER_LETTER``, which is the "a. b. c." the first attempt
-    rendered), a level is written back as one typed sequence, and ``Prefix`` is
-    literal text (asking for ``"%1."`` prints ``%1.``).
+    as well: ``NumberingType`` has to be an **integer** (a value pyuno marshals from
+    a string arrives as 0, i.e. no number at all, and ``1`` is
+    ``CHARS_LOWER_LETTER``, which is the "a. b. c." the first attempt rendered), a
+    level is written back as one typed sequence, and ``Prefix`` is literal text
+    (asking for ``"%1."`` prints ``%1.``).
 
-    The one property that cannot be inherited is how the label is *sized and
-    placed*: a level that draws a special character sizes that glyph (the fixture's
+    The properties that cannot be inherited are the ones describing a *glyph* the
+    template drew and we replaced: such a level sizes that character (the fixture's
     master asks for 45 % of the text height, which makes an unreadable digit) and
     pulls it into the margin with a ``FirstLineOffset`` tuned for it, which leaves a
     digit glued to the text ("1Introduction", ``dev/debug_numbering.py``).  The size
     is re-asked for - never smaller than the text it numbers - and the label is given
-    a column of its own at the level's ``LeftMargin``.  That column has to be asked
-    for on the *paragraph*: two slides whose level read exactly the same
-    (``LeftMargin`` 1200, ``FirstLineOffset`` -1200) rendered with and without a gap,
-    and what separated them was the paragraph's ``ParaLeftMargin`` /
-    ``ParaFirstLineIndent`` - the level's margins alone are only what the template's
-    own bullets need.  ``SymbolTextDistance`` cannot be used for the gap either:
-    writes to it are ignored, it mirrors ``FirstLineOffset``.
+    a column of its own at the level's ``LeftMargin``.  Neither is touched when the
+    template's own label is kept: then its size and its column are the target.  That
+    column has to be asked for on the *paragraph*: two slides whose level read
+    exactly the same (``LeftMargin`` 1200, ``FirstLineOffset`` -1200) rendered with
+    and without a gap, and what separated them was the paragraph's
+    ``ParaLeftMargin`` / ``ParaFirstLineIndent`` - the level's margins alone are only
+    what the template's own bullets need.  ``SymbolTextDistance`` cannot be used for
+    the gap either: writes to it are ignored, it mirrors ``FirstLineOffset``.
 
     ``bullet_colors`` optionally gives one colour per paragraph.  The label is
     painted with the level's ``BulletColor`` - which the template sets to its own
@@ -1034,13 +1171,18 @@ def _number_list(doc, shape, template_rules=None, bullet_colors=None):
     Returns whether the label could be installed; without it the list is still
     readable, just unnumbered.
     """
-    overrides = {"NumberingType": _numbering_type_arabic()}
+    if label is None:
+        label, label_overrides, substituted = _list_label_type(template_rules), {}, True
+    if substituted is None:
+        substituted = True
+    overrides = dict(label_overrides or {})
+    overrides["NumberingType"] = int(label)
     try:
         left = int(_level_value(template_rules, "LeftMargin", 0))
         offset = int(_level_value(template_rules, "FirstLineOffset", 0))
     except (TypeError, ValueError):
         left = offset = 0
-    if _level_value(template_rules, "NumberingType") in CHARACTER_LABELS:
+    if substituted:
         # the relative size describes the character the template draws, and the
         # 45 % of the text height that makes a small dot makes an unreadable
         # digit: a number is text, so it is never smaller than the text it numbers
@@ -1381,7 +1523,8 @@ def apply_footer(doc, page, source_page=None):
 _LAYOUT_OUTLINE = 2
 
 
-def build_plan_slide(doc, page, section_names, current, settings, footer=None):
+def build_plan_slide(doc, page, section_names, current, settings, footer=None,
+                     master=None):
     """Fill ``page`` with the heading plus every section name.
 
     ``current`` is the index of the highlighted section, or ``None`` for the
@@ -1397,10 +1540,12 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
     paragraph is highlighted.
 
     ``footer`` is the slide to take the footer band from (see
-    :func:`apply_footer`); it is looked up once per ``insert_plan`` and found
-    here otherwise.
+    :func:`apply_footer`), and ``master`` the master to put the slide on: both are
+    looked up once per :func:`insert_plan` and passed down, so a run cannot fail on
+    one of them after the deck has already been changed.  Found here otherwise.
     """
-    master = _master_page(doc, settings.get("master", ""))
+    if master is None:
+        master = _master_page(doc, settings.get("master", ""))
     page.MasterPage = master
     _clear_page(page)
     # before adding anything: afterwards the page keeps the rectangles it already
@@ -1464,8 +1609,10 @@ def build_plan_slide(doc, page, section_names, current, settings, footer=None):
         template_bullet = highlight
     bullets = [template_bullet if color == highlight else muted
                for color in colors]
-    # the template's own first list level, only numbered, painted per row
-    _number_list(doc, body, rules, bullets)
+    # the deck's own first list level, with the label style the deck counts in
+    # (roman where it counts roman) and one colour per row
+    label, label_overrides, substituted = _template_label(doc, master, template_body)
+    _number_list(doc, body, rules, bullets, label, label_overrides, substituted)
     # last: the paragraph colour is what the text is drawn in, and with a level
     # that fixes no bullet colour it is what the number follows as well
     _paint_paragraphs(body, colors)
@@ -1514,10 +1661,25 @@ def insert_plan(doc, settings, ctx=None):
     Idempotent: previously generated plan slides are removed first, so running
     this twice yields the same document.  ``ctx`` is the component context used
     to run the move commands; in-process callers get the document's own.
+
+    The run is all-or-nothing.  Everything that can refuse is settled *before* the
+    deck is changed, and a failure after that takes the inserted pages out again and
+    writes the section list back the way it was: a deck left half-inserted has empty
+    slides in it and sections that no longer match its slides, and the next run then
+    has to clean up a wreck instead of a deck (``dev/debug_two_documents.py`` showed
+    both, including three sections coming back as one).
+
     Returns a report dict.
     """
     if not hasattr(doc, "DrawPages"):
         raise PlanError("Open an Impress presentation first.")
+
+    # The master is the one thing the settings say about the deck that may not exist
+    # in it - the settings are per profile, so its name usually comes from another
+    # presentation - and it used to be resolved once per generated slide, i.e. only
+    # after the pages had been inserted.  Once, up front, and passed down.
+    master = _master_page(doc, settings.get("master", ""))
+
     remove_plan_slides(doc)
     sections = get_sections(doc)
     if not sections:
@@ -1543,54 +1705,70 @@ def insert_plan(doc, settings, ctx=None):
     # The generated slides belong to the deck, so they carry its footer.  Looked
     # up once, from the deck's own slides, before the generated ones exist.
     footer = footer_source(doc)
+    # ... and so is the state to go back to if anything below still fails.
+    try:
+        restored = get_sections(doc)
+    except Exception:
+        restored = []
 
-    # Insert bottom-up: adding a page shifts every index below it, so starting
-    # from the last section keeps the still-pending targets valid.  Where every
-    # slide ends up is then plain arithmetic - a page name is no help either,
-    # LibreOffice renumbers those by position as soon as the deck changes.
-    targets = [section["start"] for section in sections]
     inserted = 0
-    for position in range(len(sections) - 1, -1, -1):
-        insert_page_at(doc, targets[position], section_page_name(position), ctx)
+    try:
+        # Insert bottom-up: adding a page shifts every index below it, so starting
+        # from the last section keeps the still-pending targets valid.  Where every
+        # slide ends up is then plain arithmetic - a page name is no help either,
+        # LibreOffice renumbers those by position as soon as the deck changes.
+        targets = [section["start"] for section in sections]
+        for position in range(len(sections) - 1, -1, -1):
+            insert_page_at(doc, targets[position], section_page_name(position), ctx)
+            inserted += 1
+
+        # The overview sits above everything, i.e. before the plan slide of the
+        # first section, which is at the first section's start index.
+        overview_start = sections[0]["start"]
+        insert_page_at(doc, overview_start, OVERVIEW_NAME, ctx)
+        targets.append(overview_start)
         inserted += 1
 
-    # The overview sits above everything, i.e. before the plan slide of the
-    # first section, which is at the first section's start index.
-    overview_start = sections[0]["start"]
-    insert_page_at(doc, overview_start, OVERVIEW_NAME, ctx)
-    targets.append(overview_start)
-    inserted += 1
+        # Pages are named uniquely; re-read so the shapes go on the right pages.
+        pages = doc.DrawPages
+        by_name = {pages.getByIndex(i).Name: pages.getByIndex(i)
+                   for i in range(pages.Count)}
+        build_plan_slide(doc, by_name[OVERVIEW_NAME], names, None, settings,
+                         footer, master)
+        for position, section in enumerate(sections):
+            page = by_name.get(section_page_name(position))
+            if page is None:
+                raise PlanError("Internal error: plan slide for section '%s' is "
+                                "missing." % names[position])
+            build_plan_slide(doc, page, names, position, settings, footer, master)
 
-    # Pages are named uniquely; re-read so the shapes go on the right pages.
-    pages = doc.DrawPages
-    by_name = {pages.getByIndex(i).Name: pages.getByIndex(i) for i in range(pages.Count)}
-    build_plan_slide(doc, by_name[OVERVIEW_NAME], names, None, settings, footer)
-    for position, section in enumerate(sections):
-        page = by_name.get(section_page_name(position))
-        if page is None:
-            raise PlanError("Internal error: plan slide for section '%s' is missing."
-                            % names[position])
-        build_plan_slide(doc, page, names, position, settings, footer)
+        # Rewrite the sections so each plan slide leads its section.  The overview
+        # deliberately stays outside of every section, and the ranges are the ones
+        # the slides occupy now, not the ones they occupied before the insertions.
+        rebuilt, expected = [], []
+        for position, section in enumerate(sections):
+            positions = _section_with_plan(section["indexes"][0],
+                                           section["indexes"][-1], targets)
+            rebuilt.append({"name": section["name"], "id": section.get("id"),
+                            "slides": positions})
+            expected.append(positions)
+        final = set_sections(doc, rebuilt)
+        _check_sections(final, expected, names)
+    except Exception:
+        _drop_pages(doc, restored)
+        raise
 
-    # Rewrite the sections so each plan slide leads its section.  The overview
-    # deliberately stays outside of every section, and the ranges are the ones
-    # the slides occupy now, not the ones they occupied before the insertions.
-    rebuilt, expected = [], []
-    for position, section in enumerate(sections):
-        positions = _section_with_plan(section["indexes"][0],
-                                       section["indexes"][-1], targets)
-        rebuilt.append({"name": section["name"], "id": section.get("id"),
-                        "slides": positions})
-        expected.append(positions)
-    final = set_sections(doc, rebuilt)
-    _check_sections(final, expected, names)
-
+    asked = str(settings.get("master") or "")
     return {
         "sections": len(sections),
         "inserted": inserted,
         "overview": OVERVIEW_NAME,
         #: the slide the footer band was taken from, None when the deck has none
         "footer": str(footer.Name) if footer is not None else None,
+        #: the master the plan slides went on, and whether the settings named one
+        #: this deck has (they are per profile, so it usually names another deck's)
+        "master": str(master.Name),
+        "master_named": bool(asked) and str(master.Name) == asked,
         "slides": page_names(doc),
         "sections_after": final,
     }

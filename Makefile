@@ -48,6 +48,7 @@ test: install
 unit:
 	$(PY) tests/run_tests.py colour
 	$(PY) tests/run_tests.py point_size
+	$(PY) tests/run_tests.py list_label
 	$(PY) tests/run_tests.py dialog_field
 
 icons:
