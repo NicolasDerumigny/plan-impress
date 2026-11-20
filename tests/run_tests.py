@@ -310,6 +310,11 @@ def insert_plan_layout():
         # one plan slide per section, at the top of it
         sections = core.get_sections(doc)
         assert len(sections) == 3, sections
+        # the ranges as the document reports them: the plan slide first, then the
+        # slides the section already had.  Asserting only the names above once let
+        # three plan slides sit in the wrong sections and still pass.
+        assert [section["indexes"] for section in sections] == \
+            [[1, 2, 3], [4, 5, 6, 7], [8, 9, 10]], sections
         for index, section in enumerate(sections):
             assert section["slides"][0] == "PlanImpress:Section=%d" % index, section
             assert section["start"] == names.index(section["slides"][0]), section
@@ -341,6 +346,77 @@ def insert_plan_layout():
         assert colors == [0xEE0000] * 3, colors
     finally:
         lo.close(doc)
+
+
+@test
+def insert_plan_with_default_slide_names():
+    """A deck the user built in Impress itself, not the renamed-pages fixture.
+
+    ``DrawPages`` names such a deck ``page1``, ``page2``, … while the section
+    lists its slides under the display names ``Slide 1``, ``Slide 2``, …; the
+    fixture renames every page, so it never exercised that spelling and
+    ``insert_plan`` answered "Section '…' refers to slides that no longer exist"
+    for any deck a user had actually made.  The document is saved and reloaded to
+    be sure the section list comes back through the importer that way.
+    """
+    import uno
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.new_doc(desk, hidden=False)
+    path = os.path.join(ROOT, "out", "default-names.odp")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):
+        os.remove(path)
+    try:
+        pages = doc.DrawPages
+        while pages.Count < 8:
+            pages.insertNewByIndex(pages.Count)
+        # slide 1 and 8 belong to no section; the ids are what other documents
+        # refer to a section by, so the rewrite has to carry them along
+        core.set_sections(doc, [
+            {"name": "Intro", "id": "{11111111-1111-1111-1111-111111111111}",
+             "slides": [1, 2]},
+            {"name": "Body", "id": "{22222222-2222-2222-2222-222222222222}",
+             "slides": [3, 4, 5]},
+            {"name": "End", "id": "{33333333-3333-3333-3333-333333333333}",
+             "slides": [6]}])
+        listed = [section["slides"][0] for section in core.get_sections(doc)]
+        assert listed == ["Slide 2", "Slide 4", "Slide 7"], listed
+        doc.storeToURL(uno.systemPathToFileUrl(path),
+                       (lo.pv("FilterName", "impress8"),))
+        lo.close(doc)
+
+        doc = lo.open_doc(desk, path, hidden=False)
+        assert core.page_names(doc) == ["page%d" % i for i in range(1, 9)], \
+            core.page_names(doc)
+        report = core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        after = report["sections_after"]
+        # a plan slide in front of each section, and the deck's own slides kept;
+        # the last section also swallows the trailing slide, because
+        # SlideSections cannot end a section before the end of the deck
+        # (dev/debug_sections.py)
+        assert [section["indexes"] for section in after] == \
+            [[2, 3, 4], [5, 6, 7, 8], [9, 10, 11]], after
+        assert report["slides"][1] == core.OVERVIEW_NAME, report["slides"]
+        assert core.OVERVIEW_NAME not in [
+            name for section in after for name in section["slides"]], after
+        assert [section["id"] for section in after] == [
+            "{11111111-1111-1111-1111-111111111111}",
+            "{22222222-2222-2222-2222-222222222222}",
+            "{33333333-3333-3333-3333-333333333333}"], after
+
+        assert core.remove_plan(doc) == 4, core.page_names(doc)
+        assert core.page_names(doc) == ["page%d" % i for i in range(1, 9)], \
+            core.page_names(doc)
+        assert [section["id"] for section in core.get_sections(doc)] == [
+            "{11111111-1111-1111-1111-111111111111}",
+            "{22222222-2222-2222-2222-222222222222}",
+            "{33333333-3333-3333-3333-333333333333}"], core.get_sections(doc)
+    finally:
+        try:
+            lo.close(doc)
+        except Exception:
+            pass
 
 
 @test
@@ -675,6 +751,9 @@ def insert_plan_is_idempotent():
         assert core.page_names(doc) == [
             "welcome", "agenda-notes", "overview-diagram", "data-model", "apis",
             "live-demo", "questions"], core.page_names(doc)
+        # the sections themselves have to come back too, at their old positions
+        assert [section["indexes"] for section in core.get_sections(doc)] == \
+            [[0, 1], [2, 3, 4], [5, 6]], core.get_sections(doc)
         # removing twice is harmless
         assert core.remove_plan(doc) == 0
     finally:

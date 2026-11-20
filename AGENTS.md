@@ -143,9 +143,19 @@ reproducible with a script in `dev/`.
     `uno.Any("[]string", tuple(names))` and
     `uno.Any("[]com.sun.star.beans.PropertyValue", inner)`. Plain tuples are
     **silently dropped** — the assignment appears to succeed and nothing
-    changes. Sections store slide *names*, not positions; `start` has to be
-    derived (`core.get_sections`). Empty sections are kept by LibreOffice and
-    are ignored here.
+    changes. Empty sections are kept by LibreOffice and are ignored here.
+    What the list *means* is the trap: the document stores a **contiguous range
+    of positions** and renders it back as names, and the name a page answers to
+    is its `LinkDisplayName` (`"Slide 3"`) or the value a client last assigned to
+    `page.Name` — **never** the `DrawPages` name (`page3`). So a deck the user
+    made in Impress lists its sections as `Slide 3`, `Slide 4`, …, matching
+    nothing in `DrawPages`, and comparing the two made *Insert Plan Slides*
+    refuse to work on any real document. On a write, each name is resolved to
+    the position it names *now*, unmatched names are dropped in silence, the
+    ranges stretch over the gaps and the **last section always runs to the end
+    of the deck** ("these slides belong to no section" cannot be expressed). All
+    of it is printed by `dev/debug_sections.py`; `core.get_sections()` resolves
+    names to indexes and `core.set_sections()` takes indexes back.
 13. **`XDrawPages.insertNewByIndex(k)` inserts *after* position `k`**, clamps
     `k` to the page count, and can therefore never reach index 0. The container
     has no reorder method. `core.insert_page_at()` compensates: insert, then
@@ -156,7 +166,14 @@ reproducible with a script in `dev/`.
     are also asynchronous, hence the polling in `_wait_for_move`.
 15. Insertions do **not** shift section membership: sections must be rewritten
     after every insertion (that is why `insert_plan` recomputes the whole list
-    at the end and inserts bottom-up so the pending targets stay valid).
+    at the end and inserts bottom-up so the pending targets stay valid). Nothing
+    identifies a page across such a change either — LibreOffice renumbers the
+    automatic `pageN` names by position, so the slide that was `page3` is
+    `page4` afterwards (`dev/debug_sections.py` prints it) — hence
+    `core._section_with_plan()` computes where the slides *must* have ended up
+    and `_check_sections()` reads the list back and refuses to pretend success.
+    The assignment drops the section `Id` unless it is sent back, so
+    `set_sections()` carries it through.
 16. **Deleting a slide that anchors a section corrupts the section list**
     (measured: three sections became two with the wrong slides in them). So
     `remove_plan_slides()` snapshots the cleaned section lists first and
@@ -347,7 +364,12 @@ configuration provider, and the `service:` URL dispatch path a menu click takes.
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),
 and `remove_plan` must return to the original seven slides and be harmless when
-there is nothing to remove.
+there is nothing to remove. `insert_plan_with_default_slide_names` covers the
+shape a deck the user made in Impress has — `page1`, `page2` in `DrawPages` but
+`Slide 1`, `Slide 2` in the section list — because the fixture renames every
+page and therefore hides that spelling; it builds its own deck, saves it, reads
+it back and asserts the section ranges (`indexes`), their `Id`s and that the
+trailing unsectioned slide ends up in the last section.
 
 ### Looking at the result
 
