@@ -61,8 +61,23 @@ def desktop(ctx):
         "com.sun.star.frame.Desktop", ctx)
 
 
+def clear_lock(path):
+    """Remove the ``.~lock.<name>#`` a killed office leaves in front of a document.
+
+    ``dev/stop_lo.sh`` kills soffice, and a killed office cannot clean up after
+    itself; the next ``loadComponentFromURL`` then waits on a modal "the document is
+    in use" dialog and the calling script hangs without a word.
+    """
+    directory, name = os.path.split(str(path))
+    lock = os.path.join(directory, ".~lock.%s#" % name)
+    if os.path.exists(lock):
+        os.remove(lock)
+    return lock
+
+
 def open_doc(desk, path, hidden=True):
     """Load a document; ``hidden=False`` gives it a controller (needed for dispatch)."""
+    clear_lock(path)
     args = [pv("Hidden", True)] if hidden else []
     doc = desk.loadComponentFromURL(uno.systemPathToFileUrl(str(path)), "_blank", 0,
                                     tuple(args))

@@ -12,3 +12,6 @@ __pycache__/
 # editors / OS
 *.swp
 .DS_Store
+
+# left behind when dev/stop_lo.sh kills the office (fact 48)
+.~lock.*#

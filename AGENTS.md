@@ -363,6 +363,12 @@ reproducible with a script in `dev/`.
     back: if the edit and the restore land in the same second and the file ends up the
     same size, the `.pyc` keeps the mutated bytecode and the "restored" run still
     fails. Remove `__pycache__` (or `make clean`) before trusting such a run.
+48. `dev/stop_lo.sh` kills soffice, so a document of the run just killed keeps its
+    `.~lock.<name>#` file. The next `loadComponentFromURL()` then waits on a modal
+    "the document is in use" dialog and the script hangs without printing anything;
+    the dialog also survives the client and wedges every later load until the office
+    is restarted. `dev/lo.py:clear_lock()` removes it before loading, and a hang in
+    `open_doc` means restarting the office, not the script.
 
 ### The template's own look (`core.py`)
 
