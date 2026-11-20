@@ -298,6 +298,8 @@ def dialog_text_is_readable_and_rows_are_not_cramped():
     for above, below in zip(bottoms, labels[1:]):
         assert below - above >= 6, "label starts %d units under the field above" % (
             below - above)
+
+
 @test
 def palettes_are_the_ones_the_office_shows():
     """The picker offers LibreOffice's own colour tables, correctly parsed.
@@ -547,16 +549,45 @@ def picker_is_the_offices_dropdown():
     one_page = rows_of(picker.header_specs(names, 1, 0, 0))
     assert not one_page["previous"]["Enabled"] and not one_page["next"]["Enabled"], \
         "a one-page palette must not offer a dead arrow"
+    # the page indicator belongs *between* the two arrows.  Its box used to have a
+    # fixed width and start left of where the arrows are, so it ran four units under
+    # the > button and the number sat visibly off-centre.
+    for specs, count in ((header, 3), (one_page, 1)):
+        left = specs["previous"]["PositionX"] + specs["previous"]["Width"]
+        right = specs["next"]["PositionX"]
+        label = specs["page"]
+        assert label["PositionX"] >= left and \
+            label["PositionX"] + label["Width"] <= right, \
+            "the page indicator is behind an arrow: %s" % specs
+        assert abs(label["PositionX"] + label["Width"] / 2.0 - (left + right) / 2.0) \
+            <= 1, "the page indicator is not centred between the arrows: %s" % specs
+    # ... and it is sized for the longest page count the picker offers, not for the
+    # palette that happened to be showing when the window opened
+    long_palette = rows_of(picker.header_specs(names, 12, 0, 0, 12))
+    assert long_palette["page"]["Width"] > header["page"]["Width"], \
+        "12/12 would not fit the box built for 1/3"
 
     captions = rows_of(picker.caption_specs(bands))
     placed, _bottom = picker.layout(bands)
     assert captions["caption0"]["Label"] == picker.RECENT_CAPTION, captions
-    assert captions["caption1"]["Label"] == "standard", captions
+    # the palette's own name is said once, by the selector: a caption under the
+    # recent row repeating it is the duplicate the report was about
+    assert not captions["caption1"]["Label"], \
+        "the palette name is painted again under the selector that names it"
+    assert [caption for caption, _colours in bands if caption] == \
+        [picker.RECENT_CAPTION], "a group is captioned that the selector already names"
     for index, (_caption, _colours, y, _rows) in enumerate(placed):
+        if not _caption:
+            continue
         caption = captions["caption%d" % index]
         assert caption["PositionY"] < y, "the caption is not above its squares"
         assert caption["PositionY"] + caption["Height"] <= y, \
             "the caption is painted over its own squares"
+        # ... and it is not painted under the selector row either: it used to start
+        # three units inside it, which cut the tops off the letters
+        selector = header["palettes"]
+        assert caption["PositionY"] >= selector["PositionY"] + selector["Height"], \
+            "%s is drawn under the palette selector" % captions
 
     cells = rows_of(picker.cell_specs(bands, 0x1F4E79,
                                       picker.recent_colours(recent) + page))
@@ -586,6 +617,122 @@ def picker_is_the_offices_dropdown():
         bottom_row["cancel"]["PositionX"]
     # the recent row costs the page a row of squares, or the last row is unreachable
     assert picker.page_size(recent) == picker.CELLS - picker.COLUMNS
+
+
+@test
+def colours_are_painted_flat_with_a_solid_line():
+    """Every colour is a flat square with a solid line round it, never a bevel.
+
+    The report was "a very ugly perspective-style border around the color ... both in
+    the palette and in the option screen".  That border is the theme's button bevel -
+    dark above and to the left, light below and to the right, which is what
+    ``dev/probe_swatch_look.py`` measures on a button - and a button model has no
+    ``Border`` to switch it off with (fact 65).  Both places therefore paint the
+    colour on a label with ``Border`` = ``BorderStyle.LINE``, which the office draws in
+    one colour on all four sides (fact 77).
+    """
+    from plan_impress import dialog, picker
+    recent = [("#112233", 0x112233)]
+    bands = picker.full_bands(recent, "standard")
+    entries = picker.recent_colours(recent) + [("Blue 1", 0x2A57D7)]
+    squares = dict((name, (service, dict(props))) for name, service, props
+                   in picker.cell_specs(bands, 0x1F4E79, entries))
+    assert len(squares) == picker.CELLS, len(squares)
+    for name, (service, props) in squares.items():
+        assert service == picker._MODEL_FIXED, \
+            "%s is a %s, and the office paints a button with a bevel around the colour" \
+            % (name, service.rsplit(".", 1)[-1])
+        assert props["Border"] == dialog.BORDER_LINE, \
+            "%s has no solid line round its colour" % name
+        assert props["BackgroundColor"] is not None, name
+    # the chip that says what the pointer is over is the same kind of square
+    bottom = picker.bottom_of(bands)
+    below = dict((name, (service, dict(props))) for name, service, props
+                 in picker.bottom_specs(bottom, 0x1F4E79, "1F4E79"))
+    assert below["preview"][0] == picker._MODEL_FIXED, "the chip is a bevelled button"
+    assert below["preview"][1]["Border"] == dialog.BORDER_LINE, below["preview"]
+    # and so is the one in the settings dialog: the "option screen" of the report
+    values = {"MutedColor": "B0B0B0", "TextColor": "000000",
+              "Title": "Plan", "master": "Default"}
+    rows = dict((name, (service, dict(props))) for name, service, props
+                in dialog._field_specs(values, ["Default"]))
+    for field in dialog._COLOUR_FIELDS:
+        service, props = rows["swatch" + field]
+        assert service == dialog._FIXED_TEXT, \
+            "the %s swatch is a %s" % (field, service.rsplit(".", 1)[-1])
+        assert props["Border"] == dialog.BORDER_LINE, props
+        assert props["BackgroundColor"] == config.hex_to_color(values[field], 0), props
+    # the buttons that stay buttons (they are buttons: the office bevels those)
+    assert rows["ok"][0] == dialog._BUTTON and rows["cancel"][0] == dialog._BUTTON
+
+
+@test
+def picker_paints_nothing_on_top_of_anything_else():
+    """No two controls of the chooser occupy the same pixels.
+
+    "The text is cramped" meant the first group caption began three units *inside* the
+    selector row, so the tops of its letters were drawn behind the dropdown.  Two
+    controls in one place is invisible to an assertion about either one of them alone
+    and cheap to catch from the specs the widget is built from, so it stays caught -
+    here for the whole chooser, including the squares, the captions and the bottom row.
+    """
+    from plan_impress import picker
+    recent = [("#%06X" % (index * 0x010101), index * 0x010101)
+              for index in range(1, 4)]
+    page = [("Blue %d" % index, index * 0x010101) for index in range(1, 20)]
+    entries = picker.recent_colours(recent) + page
+    bands = picker.full_bands(recent, "standard")
+    specs, (width, height) = picker._field_specs(
+        ["standard", "libreoffice"], bands, 2, 0, 0x1F4E79, "1F4E79", 0,
+        entries=entries, widest_pages=2)
+    painted = []
+    for name, _service, props in specs:
+        props = dict(props)
+        if name.startswith("cell") and not props.get("HelpText"):
+            continue            # a square the palette does not fill is switched off
+        if name.startswith("caption") and not props.get("Label"):
+            continue            # a group with nothing to say over it is switched off
+        painted.append((name, props))
+    assert len(painted) > 20, "nothing was checked: %s" % painted
+    for index, (left_name, left) in enumerate(painted):
+        for right_name, right in painted[index + 1:]:
+            apart = (left["PositionX"] + left["Width"] <= right["PositionX"]
+                     or right["PositionX"] + right["Width"] <= left["PositionX"]
+                     or left["PositionY"] + left["Height"] <= right["PositionY"]
+                     or right["PositionY"] + right["Height"] <= left["PositionY"])
+            assert apart, "%s is drawn on top of %s: %s / %s" % (
+                left_name, right_name, left, right)
+
+
+@test
+def clicking_a_square_answers_the_picker():
+    """A square answers the chooser on a click, and names itself on the pointer.
+
+    The squares are labels now, not buttons, because a button is painted with the
+    theme's bevel around the colour (fact 77) - and a label fires no action event at
+    all, so a click has to arrive through the mouse listener that was really attached
+    to the peer.  This is what says the grid still answers at all.
+    """
+    from plan_impress import picker
+    ctx = lo.connect()
+    colours = [("Blue", 0x2A57D7), ("Green", 0x22AA44), ("Black", 0x000000)]
+    window = picker.ColourPicker(ctx, [("Few", colours)], current=0x112233)
+    window.build()
+    try:
+        window.show()
+        squares = [listener for _control, listener in window._listeners
+                   if hasattr(listener, "mouseReleased")]
+        assert len(squares) == picker.CELLS, \
+            "a grid of %d squares has %d click listeners" % (picker.CELLS, len(squares))
+        squares[1].mouseEntered(object())      # the pointer goes over the second one
+        assert window.current == 0x22AA44, window.current
+        assert "Green" in window.model.getByName("name").Label, \
+            window.model.getByName("name").Label
+        squares[1].mouseReleased(object())     # and a click on it is the answer
+        assert window.accepted, "clicking a colour did not answer the chooser"
+        assert window.current == 0x22AA44, window.current
+    finally:
+        window.dispose()
 
 
 @test
@@ -1829,7 +1976,9 @@ def dialog_ok_button_accepts_and_cancel_does_not():
 
         picker_module.pick = refuse
         try:
-            listeners["swatch:MutedColor"].actionPerformed(junk)
+            # a colour chip is a label and not a button (fact 77), so the click that
+            # opens the picker is a mouse release rather than an action
+            listeners["swatch:MutedColor"].mouseReleased(junk)
         finally:
             picker_module.pick = original
         assert not window.accepted and not window.rejected, "a swatch closed the dialog"

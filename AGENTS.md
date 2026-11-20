@@ -522,7 +522,13 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
     socket stays open for a moment after the process starts to die, which is why both the
     `/proc` command line and the port are checked), starts a new one and gives that test
     its one retry; a test that fails twice has failed. Nothing is hidden: the run ends
-    with `office restarted N time(s)`.
+    with `office restarted N time(s)`. One signature says "that was the office and not
+    the code": a `cannot get value DrawPages` / `... value Count`
+    (`UnknownPropertyException`) raised from inside `core` on a document the same run
+    read a moment earlier — a proxy whose office is gone. It landed on the same
+    document-heavy test twice in a row here, both attempts inside the wreckage of a
+    death, and the same suite was green before and after on a freshly started office
+    (`dev/start_ui.sh`); restart the office and re-run before believing such a failure.
 61. **A load right after a start answers with a *null* document.** The office answers
     its UNO socket before the desktop can create a document, and
     `loadComponentFromURL()` then returns a null proxy instead of raising; the caller's
@@ -554,9 +560,9 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
 64. **A control's paint listener is never called; its mouse listener is.**
    `dev/probe_paint.py` attaches both to a control in a dialog and drives it with
    `xdotool`: `mousePressed` arrives with pixel coordinates, `paint` never fires.
-   The grid therefore cannot be drawn — it is `picker.CELLS` (60) button controls
-   with `BackgroundColor` set, which also makes them tab-focusable and keyboard
-   activatable, which a drawn grid would not have been.
+   The grid therefore cannot be drawn — it is `picker.CELLS` (60) controls with
+   `BackgroundColor` set, one per square (which control: fact 77). What the mouse
+   listener does buy is the hover read-out and the click.
 65. **`UnoControlButtonModel` has no `Border`, `BorderColor` or `BorderLine2`.**
    Setting one is not ignored, it is an error `dialog._apply()` collects as a
    warning and the tests fail on. It does have `BackgroundColor`, `TextColor`,
@@ -564,6 +570,9 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
    square is) and `DefaultButton`. `UnoControlPanelModel` and
    `UnoControlMessageBoxModel` cannot be created from a dialog model at all —
    `createInstance()` answers `None` — while `UnoControlImageControlModel` can.
+   `UnoControlFixedTextModel` and `UnoControlImageControlModel` **do** have `Border`
+   and `BorderColor` — which is what makes a colour showable without a button's
+   bevel (fact 77).
 66. **An exception raised inside a listener disappears.** The office does not carry
    a Python traceback across the listener boundary: `out/soffice.log` stays empty
    and the widget simply looks dead — a swatch that opened nothing was a
@@ -621,10 +630,13 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
    Python (`dialog.box_lines`, `break_long_words=True` because a log path is one long
    word, `break_on_hyphens=False` because splitting a path at a hyphen makes it look
    like two paths) and one label per line, which is also what fixes the window height.
-   The first label of a dialog is drawn with a mnemonic underline under its first
-   character — the buttons carry theirs too, which is the office's own look — and
-   there is no property to switch it off, so the picker's read-out begins with a space
-   (`picker.readout`, `dev/probe_underline.py`).
+   The office draws a **mnemonic underline under the first letter of the label that
+   stands in front of an edit field** — the way a form underlines the label *of* a
+   field — and the buttons carry theirs too, which is the office's own look. No
+   property switches it off (the absent `Mnemonic`/`Decorative` above), so the
+   picker's read-out begins with a space and an empty label sits in front of the hex
+   field to take the stroke (`picker.readout`, `picker.bottom_specs`, fact 81;
+   `dev/probe_underline.py` photographs the six variants).
 73. **The box answers codes of our own, and they have to be asked for.** `RESULT_OK`
    1, `RESULT_CANCELLED` 0, `RESULT_YES` 6, `RESULT_NO` 2 — 6 is what the office's box
    answered here and what `confirm()` still compares against. Enter and Escape need a
@@ -660,6 +672,63 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
    partly off the screen, so `dialog.centre()` appears not to work: it moves **X**
    correctly and the Y the WM chooses is the one you see. Fact 37's `marco --replace`
    should be read as "any window manager".
+
+### Showing a colour (`picker.py`, `dialog.py`)
+
+The report was "a very ugly perspective-style border around the color ... both in the
+palette and in the option screen", plus "I see twice the title, once in the dropdown
+menu and once under it", "the text is cramped" and "pages (1/1 is not centered".
+Every one of them was measured rather than guessed (`dev/probe_swatch_look.py`,
+`dev/probe_picker_peers.py`, `dev/probe_underline.py`), because all four are about
+pixels no property assertion can see.
+
+77. **A colour is painted on a *label* with `Border` set, never on a button.** The
+   "perspective-style border" is the theme's **button bevel**: `dev/probe_swatch_look.py`
+   photographs one candidate per row and finds a button's colour ringed by `#000E39`
+   above and to the left and `#5F8EB9` below and to the right — dark on one pair of
+   sides, light on the other, which is a raised edge and is what the eye calls
+   perspective. A button model has no `Border` to switch it off with (fact 65).
+   `UnoControlFixedTextModel` paints the same `BackgroundColor` **flat** and, with
+   `Border = BorderStyle.LINE` (`dialog.BORDER_LINE`, 2), one row of a single colour
+   all round. So the palette's sixty squares, the chip under them and the swatch
+   beside each hex field in the settings dialog are all labels with `Border` —
+   `picker.cell_specs`, `picker.bottom_specs`, `dialog._field_specs`.
+78. **`BorderColor` is accepted and ignored.** The same probe asks for a red ring
+   (`0xFF0000`) on a label and on an image control and photographs `#2B2E39` — the
+   theme's own line colour — in both cases, identical to what an unset border colour
+   paints. Setting it is harmless but achieves nothing: a colour is outlined in the
+   theme's colour and there is nothing to be done about it from Python, so do not
+   spend time on it or write a test that expects the requested colour.
+79. **A label has no action source, so a click on a colour is `mouseReleased`.**
+   `addActionListener` on the control of a `UnoControlFixedTextModel` or an
+   `UnoControlImageControlModel` raises `AttributeError` (probe: eight times, once per
+   candidate); only a button fires `actionPerformed`. `picker`'s `Cell` listener and
+   `dialog`'s `Swatch` listener therefore take the click from `mouseReleased` and the
+   hover from `mouseEntered`, both wrapped because of fact 66. The cost is that a
+   square cannot take the tab focus, so the grid is not keyboard-navigable and the hex
+   field beside OK is the keyboard route to a colour.
+80. **The palette's name is said once, by the selector above the grid.** `grid_bands()`
+   returns `(None, colours)` for the palette page: a caption repeating what the
+   dropdown already shows is the duplicate title that was reported, and `_paint_cells()`
+   switches such a caption off rather than leaving it blank. A caption that *does*
+   exist is reserved **above** its rows (`layout()`: `_CAPTION_GAP` of clear air, then
+   `_CAPTION_H`, then the squares) — the first one used to start three units inside the
+   selector row, which drew the tops of its letters behind the dropdown, and that is
+   "the text is cramped". Both are only fixable at build time, because geometry is
+   frozen once the peer exists (fact 70); `pager_geometry()` centres the page indicator
+   between the arrows by arithmetic for the same reason, sizing its box for the widest
+   string any palette can answer with (`ColourPicker.all_pages()`, `_PAGE_CHAR_W`)
+   since a `FixedText` has no `TextAlign` (fact 72).
+   `tests/run_tests.py::picker_paints_nothing_on_top_of_anything_else` is what keeps
+   the whole popup free of two controls in one place.
+81. **The label directly in front of an edit field gets a mnemonic underline.**
+   `dev/probe_underline.py` photographs six variants of one line: a read-out before an
+   edit is drawn with a stroke under a letter, the same read-out with an empty label
+   between it and the field is clean, and a read-out before a button or on its own is
+   clean too. The office picks the label *preceding* an edit as that field's label and
+   underlines its first letter, and there is no property to say otherwise (fact 72).
+   `bottom_specs()` therefore inserts the invisible `hex-label` before `hex`; without
+   it "#1F4E79" looked like a broken glyph.
 
 ## Testing notes
 
@@ -706,10 +775,20 @@ widget's geometry is checked control by control — sixty cells that do not over
 each cell carrying the colour and the name it stands for, the cells past the end of
 the palette switched off, and every colour of a 250-colour palette reachable
 through the pager. `picker_is_the_offices_dropdown` is the one that pins the *look*
-the report asked for: a palette selector with the pager beside it, a caption above
-each group that does not overlap its squares, the colour's name and value under the
-grid with a field to type one into, one OK that Enter answers and one Cancel flush
-with the grid.
+the report asked for: a palette selector with the pager beside it, the palette named
+once rather than repeated under the selector, a caption above each group that does
+not overlap its squares or hide behind the selector, a page indicator centred between
+the arrows and sized for the widest page count any palette has, the colour's name and
+value under the grid with a field to type one into, one OK that Enter answers and one
+Cancel flush with the grid. `colours_are_painted_flat_with_a_solid_line` is the
+"perspective-style border" report: every square of the grid, the chip under it and
+both swatches of the settings dialog are labels with `Border` =
+`BorderStyle.LINE` (fact 77), while the two real buttons stay buttons.
+`picker_paints_nothing_on_top_of_anything_else` compares every pair of painted
+controls, which is the only way a cramped line becomes an assertion, and
+`clicking_a_square_answers_the_picker` fires the listeners that were really attached
+to the peers — a label answers nothing until a `mouseReleased` handler exists
+(fact 79).
 
 The message box is covered the same two ways too: `message_box_reports_what_it_says`
 checks the wrapped text (a log path is one long word and has to reach the box), the
@@ -743,8 +822,19 @@ probe that photographs them: `dev/probe_picker_look.py` opens the chooser the wa
 settings dialog does (open, palette switched, second page, pointer on a square) and
 `dev/probe_message_box.py` puts our box next to every spelling of
 `createMessageBox` there is, printing what each answered. `dev/probe_picker_peers.py`
-prints every control's rectangle in model units and in peer pixels; when a layout
-looks wrong, that table says whether the layout or the reading of it is at fault — and
+prints every control's rectangle in model units and in peer pixels and then measures
+the *ink* of the pager row — it finds the client area by the known colour of the
+recent row's first square, because the window's peer answers `0,0` (fact 76) and the
+desktop here is the same grey as the dialog — and prints how far off centre the page
+indicator's glyphs actually are. When a layout looks wrong, that table says whether
+the layout or the reading of it is at fault.
+`dev/probe_swatch_look.py` is the same trick for a colour: it puts one candidate
+control per row (a button, an image control and a label, each with every border style
+and with and without a border colour), finds each square in the screenshot *by its
+colour*, and prints the ring of pixels around it — a bevel is dark on two sides and
+light on the other two, a solid line is one colour all round — plus which border
+properties the model has at all and whether a click reaches it. `dev/probe_underline.py`
+photographs six spellings of one line to find out what draws a mnemonic stroke.
 `dev/probe_debug_toggle.py` drives the menu item itself through the installed
 extension, which is how "does nothing" was shown to be an empty box rather than a Job
 that never ran.

@@ -52,6 +52,7 @@ unit:
 	$(PY) tests/run_tests.py dialog_field
 	$(PY) tests/run_tests.py picker_cells
 	$(PY) tests/run_tests.py picker_is_the
+	$(PY) tests/run_tests.py picker_paints
 	$(PY) tests/run_tests.py message_box_reports
 	$(PY) tests/run_tests.py toggling_the_debug
 

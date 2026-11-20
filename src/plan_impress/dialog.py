@@ -374,6 +374,20 @@ _FONT = 12
 _COLOUR_FIELDS = ("MutedColor", "TextColor")
 _POS = 1                     # com.sun.star.awt.PosSize.POS
 
+#: ``com.sun.star.awt.BorderStyle.LINE``: the border that paints a **solid line**
+#: around a control, and the only spelling a colour should ever be shown with.  A
+#: colour used to be painted on a *button*, which is the obvious control for a
+#: colour one clicks - and the office then paints the button with its theme's raised
+#: bevel, dark above and to the left and light below and to the right: the
+#: "perspective-style border around the color" that was reported, in the palette and
+#: in this dialog alike.  A button model has no ``Border``/``BorderColor`` at all to
+#: switch it off with (fact 65).  ``UnoControlFixedTextModel`` has both, paints
+#: ``BackgroundColor`` flat and draws the line in one colour on all four sides; its
+#: ``BorderColor`` is accepted and then ignored, the line is the theme's own
+#: (``dev/probe_swatch_look.py``, fact 77).  A label has no action source, so a click
+#: on a colour arrives as ``mouseReleased``.
+BORDER_LINE = 2
+
 _FIXED_TEXT = "com.sun.star.awt.UnoControlFixedTextModel"
 _EDIT = "com.sun.star.awt.UnoControlEditModel"
 _LISTBOX = "com.sun.star.awt.UnoControlListBoxModel"
@@ -419,12 +433,15 @@ def _field_specs(values, masters):
             ("Height", _FIELD_H), ("FontHeight", _FONT),
         ]))
         if name in _COLOUR_FIELDS:
-            # a button, not a label: clicking the swatch is what opens the
-            # palette picker, the way the arrow opens the font-colour dropdown
-            specs.append(("swatch" + name, _BUTTON, [
+            # a label with a solid line, not a button: the button shows the colour
+            # with the theme's bevel around it (see BORDER_LINE), and clicking the
+            # swatch is what opens the palette picker either way - the way the arrow
+            # opens the font-colour dropdown.
+            specs.append(("swatch" + name, _FIXED_TEXT, [
                 ("Label", " "), ("PositionX", _SWATCH_X), ("PositionY", y),
                 ("Width", _SWATCH_W), ("Height", _FIELD_H),
                 ("BackgroundColor", config.hex_to_color(values[name], 0)),
+                ("Border", BORDER_LINE),
                 ("HelpText", "Pick a colour from a palette"),
             ]))
     specs.append(("ok", _BUTTON, [
@@ -650,13 +667,13 @@ class SettingsDialog(object):
             pass
 
     def _install_listeners(self):
-        """Attach the button and colour listeners to the peers.
+        """Attach the button, swatch and colour listeners to the peers.
 
         Separate from ``run()`` so a test can fire a button event without having
         to enter the modal loop.
         """
         import unohelper
-        from com.sun.star.awt import XActionListener, XTextListener
+        from com.sun.star.awt import XActionListener, XMouseListener, XTextListener
 
         outer = self
 
@@ -672,6 +689,40 @@ class SettingsDialog(object):
                 outer._press(self.name)
 
             def disposing(self, event):
+                pass
+
+        class Swatch(unohelper.Base, XMouseListener):
+            """One instance per colour chip.
+
+            The chip is a label, not a button, because a button is painted with the
+            theme's bevel around the colour (``BORDER_LINE``) - and a label has no
+            action source, so the click has to be taken from ``mouseReleased``.  It
+            is wrapped because an exception raised inside a listener disappears: the
+            office does not carry a traceback across that boundary, and a dead
+            swatch is exactly what that looks like (fact 66).
+            """
+
+            def __init__(self, field):
+                self.field = field
+                # the name ``_listeners`` records this one under: the peer proxy has no
+                # way back to the objects attached to it, and a test that fires a click
+                # has to find the listener again
+                self.name = "swatch:" + field
+
+            def mouseReleased(self, event):
+                try:
+                    outer._press("swatch:" + self.field)
+                except Exception:
+                    config.log(outer.ctx, "swatch %s:\n%s"
+                               % (self.field, traceback.format_exc()))
+
+            def mousePressed(self, event):
+                pass
+
+            def mouseEntered(self, event):
+                pass
+
+            def mouseExited(self, event):
                 pass
 
         class ColourWatcher(unohelper.Base, XTextListener):
@@ -708,8 +759,8 @@ class SettingsDialog(object):
             control.addTextListener(watcher)
             self._listeners.append((control, watcher))
             swatch = self.control("swatch" + field)
-            listener = Buttons("swatch:" + field)
-            swatch.addActionListener(listener)
+            listener = Swatch(field)
+            swatch.addMouseListener(listener)
             self._listeners.append((swatch, listener))
 
     def run(self):
