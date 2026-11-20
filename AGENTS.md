@@ -155,15 +155,23 @@ reproducible with a script in `dev/`.
     (measured: three sections became two with the wrong slides in them). So
     `remove_plan_slides()` snapshots the cleaned section lists first and
     rewrites them after the deletions. Do not "simplify" that.
-17. `com.sun.star.presentation.SubtitleTextShape` raises
+17. **Only slides before the first section may be ungrouped.** Writing
+    `doc.SlideSections` normalises the lists: a slide that belongs to no section
+    and sits *after* the start of the first section is appended to the section in
+    front of it (measured with `dev/debug_ungrouped.py`: sections `A=[s1,s2]`,
+    `B=[s4]` over six slides came back as `A=[s1,s2,s3]`, `B=[s4,s5]`). Slides
+    before the first section do survive, which is what lets a title slide stay
+    outside every section while `insert_plan` puts the overview at the first
+    section's start.
+18. `com.sun.star.presentation.SubtitleTextShape` raises
     `ServiceNotRegisteredException`; `com.sun.star.presentation.OutlinerShape`
     and `com.sun.star.drawing.TextShape` work. `core.BODY_SERVICES` tries them
     in that order.
-18. Never test a shape type with `"Title" in shape.ShapeType` — the body
+19. Never test a shape type with `"Title" in shape.ShapeType` — the body
     placeholder's type is `...SubtitleTextShape`, which also contains "Title".
     Use `supportsService("com.sun.star.presentation.TitleTextShape")`
     (`core._is_title`).
-19. **`CharHeight` is a point size; every geometry property is 1/100 mm.** Never
+20. **`CharHeight` is a point size; every geometry property is 1/100 mm.** Never
     derive one from the other: the original `height / 100` formula produced a
     262 pt heading (`dev/debug_sizes.py` prints the shape, paragraph and portion
     values). `core._master_char_height()` takes the size from the master
@@ -171,59 +179,59 @@ reproducible with a script in `dev/`.
     to `_TITLE_PT`/`_BODY_PT`; `_fit_point_size()` shrinks the list so all
     sections still fit under the heading, and `_UNITS_PER_POINT` (35.28, not
     3528) is the only place the conversion happens.
-20. **Do not copy a master placeholder's rectangle blindly.** The default
+21. **Do not copy a master placeholder's rectangle blindly.** The default
     Impress master keeps its title placeholder at `y = -32 mm` about two thirds
     of the page tall; used verbatim the heading is drawn outside the slide.
     `core._rect()` takes the rectangle only when it fits on the page and
     otherwise uses the computed fallback. Impress also re-snaps a presentation
     placeholder to the master and auto-grows it, so the rectangle you set is not
     always the one you read back — check the rendered result, not the property.
-21. Presentation placeholders **anchor their text in the middle of the box**, so
+22. Presentation placeholders **anchor their text in the middle of the box**, so
     a one-line heading floats down into the body; `_make_text_shape` sets
     `TextAnchor` (awt `TOP` = 0) and `TextAnchorKind` (drawing `TOP` = 1).
-22. Per-paragraph colour is set on the paragraphs of `createEnumeration()`
+23. Per-paragraph colour is set on the paragraphs of `createEnumeration()`
     (`_paint_paragraphs`), and a plain-text shape created with `setString()`
     treats `\n` as a paragraph break.
 
 ### AWT (`dialog.py`)
 
-23. `dialog.Model = model` **raises** (`UnknownPropertyException: ... property
+24. `dialog.Model = model` **raises** (`UnknownPropertyException: ... property
     is readonly`) — use `dialog.setModel(model)`.
-24. `XNameContainer.insertByName()` on a dialog model **rejects** a
+25. `XNameContainer.insertByName()` on a dialog model **rejects** a
     `sequence<PropertyValue>` that carries a `Servicename`
     (`IllegalArgumentException`). Create the control's own model service
     (`com.sun.star.awt.UnoControlEditModel`, `...ButtonModel`,
     `...ListBoxModel`, `...FixedTextModel`), set the properties on it, and insert
     that object. `dev/debug_dialog.py` demonstrates both failures.
-25. Sequence properties need explicit typing: `StringItemList` must be
+26. Sequence properties need explicit typing: `StringItemList` must be
     `uno.Any("[]string", tuple(...))`, `SelectedItems` `uno.Any("[]short", ...)`.
     `SelectedItems` is **0-based** on the model, and setting it before
     `createPeer()` is what preselects the current master slide.
     `getControl(name)` returns a proxy with a limited method set — `selectItem()`
     is a no-op and `getPropertyValue()` is missing; read/write style properties
     through `control.Model` / `dialog.Model.getByName(name)`.
-26. The dialog is built as `_field_specs(values, masters)` → `(name, model
+27. The dialog is built as `_field_specs(values, masters)` → `(name, model
     service, [(property, value)])` triples, deliberately separated from UNO
     object creation so `tests/run_tests.py` can assert the layout with no
     display. Every control must fit inside `DIALOG_WIDTH`/`DIALOG_HEIGHT`; the
     test enforces it.
-27. Message boxes: `Toolkit.createMessageBox(parent, type, buttons, text)` with
+28. Message boxes: `Toolkit.createMessageBox(parent, type, buttons, text)` with
     `MessageBoxType` `0|3|4` (message/warning/error) and `MessageBoxButtons`
     `1` (OK) or `5` (Yes/No); `execute()` returns `MessageBoxResults`
     (`6` = Yes). Always `dispose()` in a `finally`, and never let a reporting
     failure swallow the real error.
-28. `setTitle()` works on the dialog, `setPropertyValue("Title", …)` does not.
+29. `setTitle()` works on the dialog, `setPropertyValue("Title", …)` does not.
 
 ### Out-of-process test scripts
 
-29. A remote document proxy does **not** expose `getComponentContext()`, so
+30. A remote document proxy does **not** expose `getComponentContext()`, so
     `core`'s functions take an optional `ctx` argument (`insert_plan(doc,
     settings, ctx)`). Keep it optional — the in-process Job relies on the
     default — and pass the connected context from tests.
-30. Tests need a controller and a frame (moving slides and dispatching commands
+31. Tests need a controller and a frame (moving slides and dispatching commands
     both require one), so they load documents **non-hidden** against the UI-mode
     dev office. `lo.open_doc(..., hidden=False)` waits for the controller.
-31. The office logs to `out/soffice.log`. The extension's own logs are
+32. The office logs to `out/soffice.log`. The extension's own logs are
     `loprofile/user/planimpress/error.log` (always written) and `debug.log`
     (only with the `debug` marker file in that folder, or
     `PLAN_IMPRESS_DEBUG=1`); the *Toggle Debug Log* menu item flips it.

@@ -313,6 +313,47 @@ def insert_plan_is_idempotent():
 
 
 @test
+def plan_slides_leave_a_title_slide_without_section_alone():
+    """A title slide that belongs to no section stays first; the overview follows it.
+
+    The overview goes in front of the *first section*, not in front of the deck,
+    so a leading slide outside every section keeps its place and stays out of the
+    section list.  Measured (`dev/debug_ungrouped.py`): only slides before the
+    first section can be ungrouped - LibreOffice attaches any later ungrouped
+    slide to the section in front of it as soon as the section list is written.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.new_doc(desk, hidden=False)
+    try:
+        # a new Impress document already has one slide: that one is the title slide
+        doc.DrawPages.getByIndex(0).Name = "title"
+        for name in ("welcome", "agenda-notes", "diagram", "questions"):
+            doc.DrawPages.insertNewByIndex(doc.DrawPages.Count).Name = name
+        core.set_sections(doc, [("Introduction", ["welcome", "agenda-notes"]),
+                                ("Demo", ["diagram", "questions"])])
+        report = core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+
+        names = core.page_names(doc)
+        assert names[0] == "title", names
+        assert names[1] == core.OVERVIEW_NAME, names
+        assert names[2] == "PlanImpress:Section=0", names
+        assert names[3] == "welcome", names
+        assert names[-1] == "questions", names
+        assert report["inserted"] == 3, report          # 2 sections + the overview
+        # the title slide was not pulled into a section, the overview stays out too
+        listed = [name for section in core.get_sections(doc) for name in section["slides"]]
+        assert "title" not in listed, listed
+        assert core.OVERVIEW_NAME not in listed, listed
+        # removing the plan slides brings the deck back to exactly what it was
+        assert core.remove_plan(doc) == 3
+        assert core.page_names(doc) == [
+            "title", "welcome", "agenda-notes", "diagram", "questions"], core.page_names(doc)
+    finally:
+        lo.close(doc)
+
+
+@test
 def insert_plan_without_sections():
     ctx = lo.connect()
     desk = lo.desktop(ctx)

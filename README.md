@@ -13,22 +13,30 @@ slides for the presentation's sections:
 ```
 before                              after
 ─────                               ─────
-1  welcome          (Introduction)  1  Plan            <- overview, all sections
-2  agenda-notes     (Introduction)  2  Plan            <- Introduction
-3  overview-diagram (Architecture)  3  welcome
-4  data-model       (Architecture)  4  agenda-notes
-5  apis             (Architecture)  5  Plan            <- Architecture
-6  live-demo        (Demo)          6  overview-diagram
-7  questions        (Demo)          7  data-model
-                                    8  apis
-                                    9  Plan            <- Demo
-                                   10  live-demo
-                                   11  questions
+ 1  title             (no section)   1  title             <- untouched, still outside every section
+ 2  welcome           (Introduction) 2  Plan              <- overview, all sections
+ 3  agenda-notes      (Introduction) 3  Plan              <- Introduction
+ 4  overview-diagram  (Architecture) 4  welcome
+ 5  data-model        (Architecture) 5  agenda-notes
+ 6  apis              (Architecture) 6  Plan              <- Architecture
+ 7  live-demo         (Demo)         7  overview-diagram
+ 8  questions         (Demo)         8  data-model
+                                     9  apis
+                                    10  Plan              <- Demo
+                                    11  live-demo
+                                    12  questions
 ```
 
 Each plan slide lists all sections; the current one is highlighted, the rest are
 muted. The overview slide is deliberately outside every section — it belongs to
 the deck, not to a chapter of it.
+
+A **title slide that belongs to no section** is left exactly where it is: the
+overview goes in front of the *first section*, not in front of the deck, so the
+title slide stays slide 1 and the overview becomes slide 2. (Slides left
+ungrouped *after* the first section are a different matter — LibreOffice itself
+attaches those to the section in front of them whenever the section list is
+written, `AGENTS.md`.)
 
 ## Install
 
