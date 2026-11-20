@@ -419,7 +419,6 @@ def recent_palette_offers_pairs_of_name_and_colour():
         assert label == "%06X" % colour, (label, colour)
 
 
-
 @test
 def picker_pages_cover_every_colour():
     """Paging must not lose colours: a palette cell the user cannot reach is a bug."""
@@ -434,6 +433,14 @@ def picker_pages_cover_every_colour():
     assert reached == [colour for _name, colour in colours], "colours unreachable"
     assert picker.page_count(0) == 1, "an empty palette must still have a page"
     assert picker.page_slice(colours, 99) == [], "a page past the end must be empty"
+    # with a recent row above the grid the page has one row less, and paging has to
+    # count the colours it can actually show or the last row is never reachable
+    size = picker.page_size([("x", 1)] * picker.COLUMNS)
+    assert size == picker.CELLS - picker.COLUMNS, size
+    assert picker.page_count(0) == 1
+    with_recent = [colour for page in range(picker.page_count(len(colours), size))
+                   for _name, colour in picker.page_slice(colours, page, size)]
+    assert with_recent == [colour for _name, colour in colours], "lost a colour"
 
 
 @test
@@ -468,31 +475,117 @@ def picker_hides_the_cells_beyond_the_palette():
         window.dispose()
 
 
-
 @test
 def picker_cells_are_laid_out_apart():
-    """The grid is sixty buttons: they must not land on top of each other."""
+    """The grid is sixty squares: ten to a row, touching, each one its own colour."""
     from plan_impress import picker
+    recent = [("#%06X" % (index * 0x010101), index * 0x010101)
+              for index in range(1, 4)]
     colours = [("c%d" % index, index * 1000) for index in range(25)]
-    specs = picker._field_specs(["Standard", "Custom"], colours, 0, 3, 0x123456)
-    spots = {}
-    for name, _service, props in specs:
-        props = dict(props)
-        assert props["Width"] > 0 and props["Height"] > 0, (name, props)
-        assert props["PositionX"] + props["Width"] <= picker.DIALOG_WIDTH, name
-        assert props["PositionY"] + props["Height"] <= picker.DIALOG_HEIGHT, name
-        spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
-    shared = {spot: names for spot, names in spots.items() if len(names) > 1}
-    assert not shared, "controls sharing a position: %s" % shared
-    cells = {name: dict(props) for name, _service, props in specs
-             if name.startswith("cell")}
+    bands = picker.full_bands(recent, "standard")
+    entries = picker.recent_colours(recent) + colours
+    cells = dict((name, dict(props)) for name, _service, props
+                 in picker.cell_specs(bands, 0x123456, entries))
     assert len(cells) == picker.CELLS, len(cells)
-    for index in range(len(colours)):
-        assert cells["cell%d" % index]["BackgroundColor"] == colours[index][1]
-        assert cells["cell%d" % index]["HelpText"] == colours[index][0], \
+    for index in range(len(entries)):
+        assert cells["cell%d" % index]["BackgroundColor"] == entries[index][1], index
+        assert cells["cell%d" % index]["HelpText"] == entries[index][0], \
             "a cell without its colour name says nothing on hover"
-    for index in range(len(colours), picker.CELLS):
+    for index in range(len(entries), picker.CELLS):
         assert cells["cell%d" % index]["HelpText"] == "", "an empty cell looks pickable"
+    spots = {}
+    for name, props in cells.items():
+        assert props["Width"] > 0 and props["Height"] > 0, (name, props)
+        spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
+    shared = dict((spot, names) for spot, names in spots.items() if len(names) > 1)
+    assert not shared, "squares on top of each other: %s" % shared
+    # ten to a row with nothing between the squares: the office's dropdown is a
+    # block of colour, not a list of buttons with air around each
+    rows = {}
+    for name, props in cells.items():
+        rows.setdefault(props["PositionY"], []).append(props)
+    for y, row in rows.items():
+        assert len(row) == picker.COLUMNS, "row at %s holds %s squares" % (y, len(row))
+        row.sort(key=lambda props: props["PositionX"])
+        for left, right in zip(row, row[1:]):
+            assert right["PositionX"] == left["PositionX"] + left["Width"], \
+                "gap between %s and %s" % (left["PositionX"], right["PositionX"])
+
+
+@test
+def picker_is_the_offices_dropdown():
+    """The chooser is the office's *line color* dropdown, control by control.
+
+    The report was that it was ugly.  The office has exactly one way of showing
+    colours, so "like that" is a list of things a test can check without a display:
+    the palette selector with the pager beside it, a caption over each group of
+    squares, the name and value of the colour under the grid with a field to type
+    one into, and one OK and one Cancel flush with the grid.
+    ``dev/probe_picker_look.py`` is the picture these assertions describe.
+    """
+    from plan_impress import picker
+    names = ["standard", "deck"]
+    recent = [("#%06X" % (index * 0x010101), index * 0x010101)
+              for index in range(1, 4)]
+    page = [("Blue 1", 0x2A57D7), ("Green 3", 0x93CAD7)]
+    bands = picker.full_bands(recent, "standard")
+    bottom = picker.bottom_of(bands)
+    width, height = picker.DIALOG_WIDTH, picker.dialog_height(bottom)
+
+    def rows_of(specs):
+        return dict((name, dict(props)) for name, _service, props in specs)
+
+    header = rows_of(picker.header_specs(names, 3, 0, 1))
+    assert list(header["palettes"]["StringItemList"]) == names, header["palettes"]
+    assert header["palettes"]["Dropdown"] is True
+    assert list(header["palettes"]["SelectedItems"]) == [1], \
+        "the selector must show the palette that is being displayed (fact 30)"
+    assert (header["previous"]["Label"], header["next"]["Label"]) == ("<", ">")
+    assert header["page"]["Label"] == "1/3", header["page"]
+    assert header["previous"]["PositionX"] >= header["palettes"]["PositionX"] + \
+        header["palettes"]["Width"], "the pager sits on the selector"
+    one_page = rows_of(picker.header_specs(names, 1, 0, 0))
+    assert not one_page["previous"]["Enabled"] and not one_page["next"]["Enabled"], \
+        "a one-page palette must not offer a dead arrow"
+
+    captions = rows_of(picker.caption_specs(bands))
+    placed, _bottom = picker.layout(bands)
+    assert captions["caption0"]["Label"] == picker.RECENT_CAPTION, captions
+    assert captions["caption1"]["Label"] == "standard", captions
+    for index, (_caption, _colours, y, _rows) in enumerate(placed):
+        caption = captions["caption%d" % index]
+        assert caption["PositionY"] < y, "the caption is not above its squares"
+        assert caption["PositionY"] + caption["Height"] <= y, \
+            "the caption is painted over its own squares"
+
+    cells = rows_of(picker.cell_specs(bands, 0x1F4E79,
+                                      picker.recent_colours(recent) + page))
+    bottom_row = rows_of(picker.bottom_specs(bottom, 0x1F4E79, "1F4E79"))
+    for name, props in list(header.items()) + list(captions.items()) + \
+            list(cells.items()) + list(bottom_row.items()):
+        assert props["PositionX"] >= 0 and props["PositionY"] >= 0, (name, props)
+        assert props["PositionX"] + props["Width"] <= width, \
+            "%s is outside the chooser on the right" % name
+        assert props["PositionY"] + props["Height"] <= height, \
+            "%s is below the bottom of the chooser" % name
+    # the read-out: the colour's own name and value, and a field to type one in
+    assert bottom_row["name"]["Label"] == picker.readout("", 0x1F4E79)
+    assert "#1F4E79" in bottom_row["name"]["Label"]
+    assert "Dark Gray 4" in picker.readout("Dark Gray 4", 0x111111)
+    assert bottom_row["hex"]["Text"] == "1F4E79", "the hex field starts empty"
+    # and the buttons: one OK that Enter answers, one Cancel, both flush with the
+    # squares above them
+    assert (bottom_row["ok"]["Label"], bottom_row["cancel"]["Label"]) == ("OK",
+                                                                          "Cancel")
+    assert bottom_row["ok"]["DefaultButton"] is True
+    assert not bottom_row["cancel"]["DefaultButton"], \
+        "Enter would answer Cancel, which is how a box says no to everything"
+    right = picker._GRID_X + picker._GRID_W
+    assert bottom_row["cancel"]["PositionX"] + bottom_row["cancel"]["Width"] == right
+    assert bottom_row["ok"]["PositionX"] + bottom_row["ok"]["Width"] <= \
+        bottom_row["cancel"]["PositionX"]
+    # the recent row costs the page a row of squares, or the last row is unreachable
+    assert picker.page_size(recent) == picker.CELLS - picker.COLUMNS
 
 
 @test
@@ -508,8 +601,8 @@ def picking_a_colour_fills_the_field_and_is_remembered():
     original = picker_module.pick
     seen = []
 
-    def answer(ctx, entries, current=0, title="", parent_window=None):
-        seen.append((entries, current))
+    def answer(ctx, entries, current=0, title="", recent=None):
+        seen.append((entries, current, title, recent))
         return 0x1F6EC8
 
     picker_module.pick = answer
@@ -523,9 +616,15 @@ def picking_a_colour_fills_the_field_and_is_remembered():
         assert window.settings["recent_colors"][0] == 0x1F6EC8, window.settings
         assert seen and seen[0][1] == 0xB0B0B0, \
             "the picker did not start at the current colour"
+        assert seen[0][2], "the picker opened without a title"
         offered = [name for name, _colours in seen[0][0]]
-        assert "Recently used" in offered, offered[:4]
         assert "standard" in [name.lower() for name in offered], offered[:4]
+        # the colours the user picked before are a group of their own above the
+        # grid, as in the office's dropdown - not another palette in the list
+        assert not [name for name in offered if name.lower() == "recently used"], \
+            "the recent colours are not a palette: %s" % offered[:4]
+        remembered = picker_module.recent_colours(seen[0][3])
+        assert [colour for _name, colour in remembered] == [0x22AA44], remembered
         # and it is saved: config.save() writes every known key, so a result()
         # that drops recent_colors would silently forget what was just picked
         result = window.result()
@@ -560,6 +659,158 @@ def deck_palette_lists_the_colours_the_deck_uses():
     values = [colour for _label, colour in colours]
     # the fixture's own blues, so a plan slide can match the deck
     assert 0x3465A4 in values or 0x729FCF in values, [hex(c) for c in values]
+
+
+# the text of the box the *Toggle Debug Log* report turned on: a long path is one
+# long word, which is the case a wrapper gets wrong
+_LOG_PATH = "/".join(["a-very-long-profile-directory-name"] * 3) + "/planimpress/debug.log"
+_BOX_TEXT = "Debug log enabled, writing to\n%s" % _LOG_PATH
+
+
+@test
+def message_box_reports_what_it_says():
+    """Our own message box fits its text and its buttons answer what they promise.
+
+    ``Toolkit.createMessageBox`` is gone - its docstring says why - so everything
+    the extension tells the user goes through the box built here.  A box that paints
+    only its OK button is indistinguishable from a menu item that does nothing, which
+    is the report this came from, so the words themselves are what is asserted.
+    """
+    from plan_impress import dialog
+    lines = dialog.box_lines(_BOX_TEXT)
+    assert lines[0] == "Debug log enabled, writing to", lines
+    assert any(line.startswith("a-very-long-profile") for line in lines[1:]), lines
+    assert all(len(line) <= dialog._BOX_CHARS for line in lines), \
+        "a line wider than the box is drawn outside it"
+    assert _LOG_PATH.replace("/", "") in "".join(lines).replace("/", "").replace(" ", ""), \
+        "the log file the user is being sent to is not in the box"
+    assert dialog.box_lines("a\n\nb") == ["a", "", "b"], "a blank line vanished"
+    assert dialog.box_lines("") == [""], "an empty message would build a box with no text"
+
+    for buttons, labels in ((1, ("OK", "Cancel")), (5, ("Yes", "No"))):
+        specs, (width, height) = dialog.box_specs(_BOX_TEXT, "info", buttons,
+                                                  dialog.TITLE)
+        controls = dict((name, dict(props)) for name, _service, props in specs)
+        text = dict((name, props) for name, props in controls.items()
+                    if name.startswith("text"))
+        pressed = dict((name, props) for name, props in controls.items()
+                       if not name.startswith("text"))
+        assert len(text) == len(lines), "one label per line: %s against %s" % (text, lines)
+        assert sorted(props["Label"] for props in pressed.values()) == sorted(labels), \
+            sorted(pressed)
+        for name, props in controls.items():
+            assert props["PositionX"] >= 0 and props["PositionY"] >= 0, (name, props)
+            assert props["PositionX"] + props["Width"] <= width, \
+                "%s is outside the box on the right" % name
+            assert props["PositionY"] + props["Height"] <= height, \
+                "%s is below the bottom of the box" % name
+            assert props["FontHeight"] >= dialog._FONT, \
+                "%s is smaller than the menu text" % name
+        assert min(props["PositionX"] for props in pressed.values()) > 0
+        assert max(props["PositionX"] + props["Width"]
+                   for props in pressed.values()) == width - dialog._BOX_MARGIN, \
+            "the buttons are not in the bottom right corner"
+        assert min(props["PositionY"] for props in pressed.values()) >= \
+            max(props["PositionY"] + props["Height"] for props in text.values()), \
+            "the buttons are painted over the message"
+        default = [name for name, props in pressed.items() if props.get("DefaultButton")]
+        assert default == [labels[0].lower()], \
+            "Enter must answer %s, not the other one: %s" % (labels[0], default)
+
+
+@test
+def message_box_answers_its_buttons():
+    """The buttons answer the codes ``confirm`` reads, with the office holding the window.
+
+    ``message()`` itself cannot be called from here: it blocks until somebody
+    presses something.  :func:`dialog._build_box` is the same box without the modal
+    loop, so the answer each button gives - and that Enter gives the *primary* one,
+    which is where a ``DefaultButton`` on Cancel once made every box say no - is
+    checked against a real window.
+    """
+    from plan_impress import dialog
+    ctx = lo.connect()
+    text = "Remove the plan slides of this deck?"
+    for buttons, answers, primary, secondary in (
+            (1, {"ok": dialog.RESULT_OK, "cancel": dialog.RESULT_CANCELLED},
+             dialog.RESULT_OK, dialog.RESULT_CANCELLED),
+            (5, {"yes": dialog.RESULT_YES, "no": dialog.RESULT_NO},
+             dialog.RESULT_YES, dialog.RESULT_NO)):
+        box = dialog._build_box(ctx, text, "warning", buttons, dialog.TITLE)
+        try:
+            dialog._show_box(box["dialog"], ctx, dialog.TITLE)
+            names = list(box["model"].ElementNames)
+            for name in answers:
+                assert name in names, "no %s button: %s" % (name, names)
+            assert len([name for name in names if name.startswith("text")]) == \
+                len(dialog.box_lines(text)), names
+            place = box["dialog"].getPeer().getPosSize()
+            # fact 27: a dialog that is not given its size stays at the 300x450
+            # *unit* default, which is about 760x1075 px - a box that size is
+            # obviously wrong for one line of text, so the numbers prove the model
+            # property took effect
+            assert 200 < place.Width < 600 and 80 < place.Height < 600, \
+                "the window kept the AWT default instead of its text: %s" % (place,)
+            for name, expected in answers.items():
+                box["state"]["result"] = -1
+                box["press"](name)
+                assert box["state"]["result"] == expected, \
+                    "%s answered %s" % (name, box["state"]["result"])
+            box["state"]["result"] = -1
+            box["press_key"](dialog._KEY_RETURN)
+            assert box["state"]["result"] == primary, "Enter answered the wrong button"
+            box["state"]["result"] = -1
+            box["press_key"](dialog._KEY_ESCAPE)
+            assert box["state"]["result"] == secondary, "Escape answered the wrong button"
+        finally:
+            box["dialog"].dispose()
+
+
+@test
+def toggling_the_debug_log_says_what_it_did():
+    """*Toggle Debug Log* has to show something, or it is a menu item that does nothing.
+
+    The Job always ran and always moved the marker; what was missing was the report.
+    Both halves are asserted here: the marker the logger looks for really flips, and
+    a box that names the log file is asked for - with the office's own
+    ``createMessageBox`` this call produced a window with nothing in it.
+    """
+    import handler
+    from plan_impress import config, dialog
+    folder = os.path.join(ROOT, "out", "profile-debug")
+    if not os.path.isdir(folder):
+        os.makedirs(folder)
+    ctx = FakeContext(folder)
+    path = config.debug_log_path(ctx)
+    marker = os.path.join(os.path.dirname(path), "debug")
+    if os.path.exists(marker):
+        os.remove(marker)
+    shown = []
+    original = dialog.message
+
+    def record(context, text, kind="info", buttons=1, title=dialog.TITLE):
+        shown.append((text, kind, buttons, title))
+        return dialog.RESULT_OK
+
+    dialog.message = record
+    try:
+        job = handler.Debug(ctx)
+        job.do_debug()
+        assert os.path.exists(marker), "no marker: the log would not be written"
+        assert shown, "the command showed nothing at all"
+        text, _kind, buttons, _title = shown[0]
+        assert "enabled" in text and "disabled" not in text, text
+        assert path in text, "the box does not say where the log is: %s" % text
+        assert buttons == 1, "an OK box is enough: %s" % buttons
+        del shown[:]
+        job.do_debug()
+        assert not os.path.exists(marker), "the marker is still there: the log is on"
+        assert shown and "disabled" in shown[0][0], shown
+        assert path in shown[0][0], shown
+    finally:
+        dialog.message = original
+        if os.path.exists(marker):
+            os.remove(marker)
 
 
 @test
@@ -1572,8 +1823,8 @@ def dialog_ok_button_accepts_and_cancel_does_not():
         shown = []
         original = picker_module.pick
 
-        def refuse(ctx, entries, current=0, title="", parent_window=None):
-            shown.append((entries, current, title))
+        def refuse(ctx, entries, current=0, title="", recent=None):
+            shown.append((entries, current, title, recent))
             return None              # as if the user had pressed Cancel
 
         picker_module.pick = refuse

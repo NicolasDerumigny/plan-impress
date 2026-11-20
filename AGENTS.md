@@ -295,9 +295,10 @@ reproducible with a script in `dev/`.
     (only with the `debug` marker file in that folder, or
     `PLAN_IMPRESS_DEBUG=1`); the *Toggle Debug Log* menu item flips it.
 37. The UI itself can only be checked on a real display:
-    `Xvfb :98 -screen 0 1440x900x24` plus `marco --replace` as window manager,
-    `DISPLAY=:98 make install`, `python3 dev/open_fixture.py`, then drive the menu
-    with `xdotool mousemove X Y click 1` and capture with `scrot -o`.
+    `Xvfb :98 -screen 0 1440x900x24` plus a window manager (`openbox --replace`;
+    there is no `marco` here — fact 76), `DISPLAY=:98 make install`,
+    `python3 dev/open_fixture.py`, then drive the menu with
+    `xdotool mousemove X Y click 1` and capture with `scrot -o`.
     `dev/render_plan.py` renders the generated slides to PDF/PNG instead, and
     `dev/show_plan.py` inserts the slides and puts one in front of the controller
     for the screenshot. Both are how the settings dialog was finally confirmed —
@@ -576,11 +577,89 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
    `recent_palette_offers_pairs_of_name_and_colour` and the assertions in
    `deck_palette_lists_the_colours_the_deck_uses` are there to catch.
 68. **Cells past the end of the palette have to be switched off, and only after
-   `createPeer`.** `setVisible()` talks to the peer, so `run()` calls
+   `createPeer`.** `setVisible()` talks to the peer, so `show()` calls
    `_paint_cells()` after `_peer()`; before the fix a 5-colour palette left 55
    squares painted in the colour being edited, looking pickable and picking
    something else. Paging (`<`, `>`) exists because no scrollable container's model
    can be created and `freecolour-hlc` has 240 colours.
+69. **The picker is a popup of one fixed shape.** Every control — the sixty squares,
+   both captions, the header, the read-out and the buttons — is created once at its
+   final rectangle, from `full_bands()` (the recent row plus a *whole* page), and
+   only colours, labels, `Enabled` and visibility change at runtime, because geometry
+   does not (fact 70). `flat_cells()` therefore pads each group to whole rows: with a
+   three-colour recent group the palette's first colours otherwise landed in the
+   *recent* row's squares. `page_size(recent) = CELLS - COLUMNS` says what that row
+   costs the page.
+70. **Control geometry does not follow the model after `createPeer`; colour and
+   words do.** Writing `PositionX`/`PositionY` to a control model once the peer exists
+   changes the model and leaves the pixels where they were — measured by hiding a
+   caption, moving it and showing it again, and by the second group's caption ending up
+   painted behind the palette selector. `BackgroundColor`, `Label`, `HelpText`,
+   `Enabled`, `setVisible()` and the **dialog model's** `Width`/`Height` do take effect.
+   An `XControl` has no `getPosition`; ask its **peer** (`getPeer().getPosSize()`,
+   pixels, 2.53 x 2.39 per dialog unit). `dev/probe_picker_peers.py` prints model units
+   and peer pixels side by side, which is the only way to tell a wrong layout from a
+   wrong assumption.
+
+### Message boxes (`dialog.message`)
+
+71. **There is no message box to reuse.** On LibreOffice 26.8 the toolkit exposes
+   `XToolkit2::createMessageBox` with **five** parameters — `(XWindowPeer,
+   MessageBoxType, long, string text, string title)` — where `XToolkit` up to
+   LibreOffice 7.x had four. The four-argument call raises `IllegalArgumentException:
+   expected 5, got 4` before a window exists; with the fifth supplied a window *does*
+   appear and paints nothing but its OK button — 400 characters of text produce the
+   same empty strip (`dev/probe_message_box.py`, `dev/probe_debug_toggle.py`). So
+   *Toggle Debug Log does nothing* was a command that ran, flipped the marker and
+   showed an empty box, and every message the extension shows is now
+   `dialog.message`: a top-level `UnoControlDialog` of the same make as the settings
+   dialog. Fact 32's `createMessageBox` recipe is dead; keep `setTitle()` and the
+   `dispose()` in a `finally` from it.
+72. **A `FixedText` wraps nothing.** `UnoControlFixedTextModel` has `MultiLine` but
+   **no** `WordWrap`, `TextAlign`, `Mnemonic`, `Decorative` or `MaxLen` (each one
+   `UnknownPropertyException` — `dev/probe_mnemonic.py`), so the text is wrapped in
+   Python (`dialog.box_lines`, `break_long_words=True` because a log path is one long
+   word, `break_on_hyphens=False` because splitting a path at a hyphen makes it look
+   like two paths) and one label per line, which is also what fixes the window height.
+   The first label of a dialog is drawn with a mnemonic underline under its first
+   character — the buttons carry theirs too, which is the office's own look — and
+   there is no property to switch it off, so the picker's read-out begins with a space
+   (`picker.readout`, `dev/probe_underline.py`).
+73. **The box answers codes of our own, and they have to be asked for.** `RESULT_OK`
+   1, `RESULT_CANCELLED` 0, `RESULT_YES` 6, `RESULT_NO` 2 — 6 is what the office's box
+   answered here and what `confirm()` still compares against. Enter and Escape need a
+   `XKeyListener` on the **peer**: `dialog.getPeer()` *before* `createPeer` answers
+   None, so a listener attached at build time was attached to nothing and Enter worked
+   only because the office acts on `DefaultButton` itself — and `DefaultButton` on the
+   secondary button made every box answer "cancel" to Enter. `_build_box()` is the box
+   without `execute()`, which is how the codes are tested at all: a modal box cannot be
+   looked at from the inside.
+
+### Seeing what a widget actually painted
+
+74. **A screenshot has to be taken synchronously.** `os.spawnv(P_NOWAIT, ..., scrot)`
+   returns before the pixels are grabbed, so every shot showed what the *next* step had
+   already done: one and the same colour chip looked blue in one screenshot and black in
+   the next, and the investigation that followed was about a bug that did not exist.
+   `dev/probe_picker_look.py` waits for `scrot` and then samples the **pixel** of the
+   swatch rather than trusting the eye, which is also how the hover read-out was found
+   to be stale (fact 75).
+75. **A peer is not told when its model changes.** Writing `Label` or `BackgroundColor`
+   after `createPeer` leaves the pixels alone. `dialog.updateWindow()` does not exist
+   (`AttributeError`); the peer has `invalidate(flags)` and wants a
+   `com.sun.star.awt.WindowPaintFlags` — `1` (`PAINT`) repaints the window and leaves
+   the *controls* showing what they showed before, which is how the read-out under the
+   grid kept the colour the dialog was opened with however often the pointer moved.
+   `picker._refresh()` invalidates the dialog peer with `3` (`ALL`) and then each
+   control's own peer.
+
+### The dev office's window manager
+
+76. **There is no `marco` on this machine; `openbox` does the job** (`dev/start_ui.sh`
+   runs it). Without a window manager a top-level `UnoControlDialog` lands at 0,0 and
+   partly off the screen, so `dialog.centre()` appears not to work: it moves **X**
+   correctly and the Y the WM chooses is the one you see. Fact 37's `marco --replace`
+   should be read as "any window manager".
 
 ## Testing notes
 
@@ -626,7 +705,21 @@ the recently used list sanitised on the way in and on the way out), and the
 widget's geometry is checked control by control — sixty cells that do not overlap,
 each cell carrying the colour and the name it stands for, the cells past the end of
 the palette switched off, and every colour of a 250-colour palette reachable
-through the pager.
+through the pager. `picker_is_the_offices_dropdown` is the one that pins the *look*
+the report asked for: a palette selector with the pager beside it, a caption above
+each group that does not overlap its squares, the colour's name and value under the
+grid with a field to type one into, one OK that Enter answers and one Cancel flush
+with the grid.
+
+The message box is covered the same two ways too: `message_box_reports_what_it_says`
+checks the wrapped text (a log path is one long word and has to reach the box), the
+controls inside the window, the buttons in the bottom right and exactly one
+`DefaultButton`, on the primary; `message_box_answers_its_buttons` builds the box
+without the modal loop and checks what each button and each key answers, against a
+real window. `toggling_the_debug_log_says_what_it_did` is the user's report: the
+marker flips *and* a box naming the log file is asked for — comment the
+`dialog.message` call out of `handler.do_debug` and it fails with "the command showed
+nothing at all".
 
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),
@@ -644,6 +737,17 @@ Whether the office has an API at all is worth asking before writing a widget
 against it: `dev/probe_api.py` searches the type repository by hierarchical name
 and `dev/probe_palettes.py` reports where the palettes and the deck's own colours
 actually come from; both are what the picker's design rests on.
+
+For the two widgets the office's own versions are the specification, and both have a
+probe that photographs them: `dev/probe_picker_look.py` opens the chooser the way the
+settings dialog does (open, palette switched, second page, pointer on a square) and
+`dev/probe_message_box.py` puts our box next to every spelling of
+`createMessageBox` there is, printing what each answered. `dev/probe_picker_peers.py`
+prints every control's rectangle in model units and in peer pixels; when a layout
+looks wrong, that table says whether the layout or the reading of it is at fault — and
+`dev/probe_debug_toggle.py` drives the menu item itself through the installed
+extension, which is how "does nothing" was shown to be an empty box rather than a Job
+that never ran.
 
 Assertions cannot tell you a slide looks right, and a font size that is wrong by
 a factor of ten passed every test once. To see the generated deck: export a

@@ -63,22 +63,268 @@ def _parent_window(ctx):
     return None
 
 
-def message(ctx, text, kind="info", buttons=_OK):
-    """Show a modal message box; returns the button code (1 = OK, 6 = Yes)."""
-    box_type = {"info": _MSGBOX, "warning": _WARNINGBOX, "error": _ERRORBOX}[kind]
+#: Our own message box, in dialog units (fact 28: one unit is about 2.5 px).
+_BOX_MARGIN = 10
+_BOX_TEXT_W = 110                  # ~275 px of text before a line is wrapped
+_BOX_LINE_H = 9                    # one line of _FONT text, with air
+_BOX_BUTTON_W = 26
+_BOX_BUTTON_H = 18
+_BOX_BUTTON_GAP = 4
+_BOX_GAP = 10                      # between the text and the buttons
+_BOX_CHARS = 44                    # characters per line at _FONT
+
+#: com.sun.star.awt.KeyCodes, spelled out because importing ``KeyCodes`` at the top
+#: of the module is what makes extension registration fail (fact 3).
+_KEY_ESCAPE = 27
+_KEY_RETURN = 1
+
+#: What :func:`message` answers.  ``createMessageBox`` is gone (see its docstring)
+#: and this box decides its own codes, but ``YES`` stays at the 6 the office used to
+#: answer for it (fact 32) because :func:`confirm` and the tests read that value.
+RESULT_CANCELLED = 0
+RESULT_OK = 1
+RESULT_YES = 6
+RESULT_NO = 2
+
+
+def box_lines(text, width=_BOX_CHARS):
+    """The text as the lines the box shows, one label per line.
+
+    ``UnoControlFixedTextModel`` has ``MultiLine`` and nothing else that helps: no
+    ``WordWrap``, no ``TextAlign`` (and no ``Mnemonic``, no ``Decorative``, no
+    ``MaxLen`` - each one ``UnknownPropertyException``, ``dev/probe_mnemonic.py``), so
+    a label cannot be asked to wrap or to align - the wrapping happens here instead
+    and each line gets a control of its own, which is also what fixes the height of
+    the window.  ``break_long_words`` matters: the log path the debug box prints is
+    one long word.  ``break_on_hyphens`` is off for the same reason: splitting a path
+    at a hyphen makes it look like two paths.
+    """
+    import textwrap
+    lines = []
+    for paragraph in str(text).split("\n"):
+        lines += textwrap.wrap(paragraph, width, break_long_words=True,
+                               break_on_hyphens=False) or [""]
+    return lines
+
+
+def box_size(text):
+    """``(width, height)`` of the box for ``text``, in dialog units."""
+    lines = box_lines(text)
+    return (2 * _BOX_MARGIN + _BOX_TEXT_W,
+            2 * _BOX_MARGIN + len(lines) * _BOX_LINE_H + _BOX_GAP + _BOX_BUTTON_H)
+
+
+def box_specs(text, kind, buttons, title):
+    """The box's controls as ``(name, service, [(property, value)])``.
+
+    Split out from the UNO calls so the geometry can be tested without a display,
+    the way ``dialog._field_specs`` and ``picker._field_specs`` are.
+    """
+    width, height = box_size(text)
+    service = "com.sun.star.awt.UnoControlButtonModel"
+    specs = []
+    for index, line in enumerate(box_lines(text)):
+        specs.append(("text%d" % index, _FIXED_TEXT, [
+            ("Label", line), ("PositionX", _BOX_MARGIN),
+            ("PositionY", _BOX_MARGIN + index * _BOX_LINE_H),
+            ("Width", _BOX_TEXT_W), ("Height", _BOX_LINE_H),
+            ("FontHeight", _FONT),
+        ]))
+    buttons_y = height - _BOX_MARGIN - _BOX_BUTTON_H
+    labels = [("ok", "OK", RESULT_OK), ("cancel", "Cancel", RESULT_CANCELLED)] \
+        if buttons == _OK else \
+        [("yes", "Yes", RESULT_YES), ("no", "No", RESULT_NO)]
+    right = width - _BOX_MARGIN
+    primary = labels[0][0]
+    for position, (name, label, _result) in enumerate(reversed(labels)):
+        specs.append((name, service, [
+            ("Label", label),
+            ("PositionX", right - _BOX_BUTTON_W - position * (_BOX_BUTTON_W + _BOX_BUTTON_GAP)),
+            ("PositionY", buttons_y), ("Width", _BOX_BUTTON_W),
+            ("Height", _BOX_BUTTON_H), ("FontHeight", _FONT),
+            # Enter answers the *primary* button, as in the office's own boxes.  It
+            # is the last one placed, not the first: ``reversed`` puts the secondary
+            # on the right, and marking position 0 made Enter mean Cancel - which is
+            # how a box that looked perfect answered "no" to everything.
+            ("DefaultButton", name == primary),
+        ]))
+    return specs, (width, height)
+
+
+def message(ctx, text, kind="info", buttons=_OK, title=TITLE):
+    """Show a modal message box; returns RESULT_OK / RESULT_YES / RESULT_NO / 0.
+
+    ``Toolkit.createMessageBox`` cannot be used: on this office it is
+    ``XToolkit2::createMessageBox`` with **five** parameters
+    ``(XWindowPeer, MessageBoxType, long, string text, string title)``, and the
+    four-argument call ``XToolkit`` had up to LibreOffice 7.x raises
+    ``IllegalArgumentException: incorrect number of parameters passed invoking
+    function createMessageBox: expected 5, got 4`` before a window exists.  With the
+    fifth argument supplied a window *does* appear - and paints nothing but its OK
+    button, whatever the text is (``dev/probe_message_box.py``: 400 characters of it
+    produce the same empty strip), so the report "Toggle Debug Log does nothing" was
+    a command that ran, flipped the state, and showed a box with no message in it.
+
+    The box is therefore built the way the settings dialog is: a titled top-level
+    ``UnoControlDialog``, one label per line of the (wrapped) text, and buttons that
+    each carry their own listener (fact 31).
+    """
+    box = None
     try:
-        box = _toolkit(ctx).createMessageBox(_parent_window(ctx), box_type, buttons, text)
-        try:
-            return box.execute()
-        finally:
-            box.dispose()
+        box = _build_box(ctx, text, kind, buttons, title)
+        _show_box(box["dialog"], ctx, title)
+        _listen_for_keys(box, ctx)          # the peer exists only now
+        box["dialog"].execute()
+        box["dialog"].setVisible(False)
     except Exception:
-        # Never let a reporting problem swallow the real error.
-        return 0
+        # Never let a reporting problem swallow the real error - but say so.
+        config.log(ctx, "message box failed: %s" % traceback.format_exc())
+        return RESULT_CANCELLED
+    finally:
+        if box is not None:
+            try:
+                box["dialog"].dispose()
+            except Exception:
+                pass
+    return box["state"]["result"]
+
+
+def _build_box(ctx, text, kind, buttons, title):
+    """The box with its controls and listeners, without the modal loop.
+
+    Split out of :func:`message` because a modal box cannot be looked at from the
+    inside: ``execute()`` blocks until somebody answers it, so which code each
+    button answers with was invisible to the suite - and that is exactly where a
+    ``DefaultButton`` sitting on Cancel instead of OK turns a box that looks perfect
+    into one that says "no" to Enter.  ``press(name)`` is what a button's listener
+    calls; a test can call the same thing.
+
+    Returns ``{"dialog", "model", "state", "press", "press_key", "key", "kept",
+    "size"}``.
+    """
+    # com.sun.star is imported here, not at the top: the extension manager
+    # imports this module while registering it, where those imports fail (fact 3)
+    import unohelper
+    from com.sun.star.awt import XActionListener, XKeyListener
+    manager = ctx.ServiceManager
+    dialog = manager.createInstanceWithContext(
+        "com.sun.star.awt.UnoControlDialog", ctx)
+    model = manager.createInstanceWithContext(
+        "com.sun.star.awt.UnoControlDialogModel", ctx)
+    dialog.setModel(model)
+    specs, (width, height) = box_specs(text, kind, buttons, title)
+    for property_name, value in (("Width", width), ("Height", height)):
+        try:
+            model.setPropertyValue(property_name, value)
+        except Exception:
+            pass
+    for name, service, props in specs:
+        # the model has to come from the dialog model itself (fact 25)
+        control_model = model.createInstance(service)
+        _apply(control_model, props, [], name)
+        model.insertByName(name, control_model)
+
+    state = {"result": RESULT_CANCELLED}
+    results = {"ok": RESULT_OK, "cancel": RESULT_CANCELLED,
+               "yes": RESULT_YES, "no": RESULT_NO}
+    primary = RESULT_OK if buttons == _OK else RESULT_YES
+    secondary = RESULT_CANCELLED if buttons == _OK else RESULT_NO
+    kept = []
+
+    def answer(result):
+        config.log(ctx, "box answered %d" % result)
+        state["result"] = result
+        try:
+            dialog.endExecute()
+        except Exception:
+            pass
+
+    class Press(unohelper.Base, XActionListener):
+        """One listener per button (fact 31): deciding from
+        ``event.Source.Model.Name`` has been seen to fail silently."""
+
+        def __init__(self, result):
+            self.result = result
+
+        def actionPerformed(self, event):
+            answer(self.result)
+
+        def disposing(self, event):
+            pass
+
+    class Key(unohelper.Base, XKeyListener):
+        """Return answers the primary button, Escape the secondary one.
+
+        ``UnoControlDialog`` highlights its default button but does not act on it,
+        so without this the only way out of a message the extension showed was to
+        find OK with the mouse - and a box the user cannot close looks exactly like
+        an office that has stopped answering.
+        """
+
+        def keyReleased(self, event):
+            if event.KeyCode == _KEY_RETURN:
+                answer(primary)
+            elif event.KeyCode == _KEY_ESCAPE:
+                answer(secondary)
+
+        def keyPressed(self, event):
+            pass
+
+        def disposing(self, event):
+            pass
+
+    for name, result in results.items():
+        try:
+            control = dialog.getControl(name)
+        except Exception:
+            continue
+        if control is None:
+            continue
+        listener = Press(result)
+        control.addActionListener(listener)
+        kept.append((control, listener))
+    return {"dialog": dialog, "model": model, "state": state,
+            "press": lambda name: answer(results[name]),
+            "press_key": lambda code: answer(primary if code == _KEY_RETURN
+                                             else secondary),
+            "key": Key(), "kept": kept, "size": (width, height)}
+
+
+def _listen_for_keys(box, ctx):
+    """Attach the Return/Escape listener - after ``_show_box``, not before.
+
+    Asking for the peer before ``createPeer`` answers None, so a listener attached
+    at build time went nowhere and the box answered Enter only because the office
+    acts on ``DefaultButton`` itself.
+    """
+    try:
+        peer = box["dialog"].getPeer()
+    except Exception:
+        return
+    if peer is None:
+        return
+    try:
+        peer.addKeyListener(box["key"])
+        box["kept"].append((peer, box["key"]))
+    except Exception:
+        config.log(ctx, "message box keys: %s" % traceback.format_exc())
+
+
+def _show_box(dialog, ctx, title):
+    """Attach the peer, the title and the position; the box is then ready to run."""
+    try:
+        dialog.createPeer(_toolkit(ctx), None)     # its own top-level window
+    except Exception:
+        dialog.createPeer(_toolkit(ctx), _parent_window(ctx))
+    try:
+        dialog.setTitle(title)
+    except Exception:
+        pass                     # fact 32: setTitle, never setPropertyValue("Title")
+    centre(dialog, ctx)
 
 
 def confirm(ctx, text):
-    return message(ctx, text, "warning", _YES_NO) == _RESULT_YES
+    return message(ctx, text, "warning", _YES_NO) == RESULT_YES
 
 
 # --------------------------------------------------------------------------- #
@@ -218,6 +464,33 @@ def _apply(control_model, props, warnings, name):
             warnings.append("%s.%s: %s" % (name, property_name, error))
 
 
+def centre(dialog, ctx):
+    """Put ``dialog`` in the middle of the frame it belongs to.
+
+    ``setPosSize`` does move the window, it only does nothing about its size, so
+    the position is set here in the peer's own coordinate system - the same one
+    ``wizards/ui/UnoDialog.py`` centres its dialogs in.  The colour picker needs it
+    as much as the settings dialog does: a popup nobody positioned lands at 0,0,
+    which puts its palette selector above the top of the screen.
+    """
+    area = None
+    parent = _parent_window(ctx)
+    if parent is not None:
+        try:
+            area = parent.getPosSize()
+        except Exception:
+            area = None
+    if area is None:
+        return
+    size = dialog.getPosSize()
+    x = max(0, area.X + (area.Width - size.Width) // 2)
+    y = max(0, area.Y + (area.Height - size.Height) // 2)
+    try:
+        dialog.setPosSize(x, y, size.Width, size.Height, _POS)
+    except Exception:
+        pass
+
+
 class SettingsDialog(object):
     """Modal settings editor: hex colours, heading text, master slide."""
 
@@ -299,28 +572,7 @@ class SettingsDialog(object):
         self._centre()
 
     def _centre(self):
-        """Put the dialog in the middle of the frame it belongs to.
-
-        ``setPosSize`` does move the window, it only does nothing about its size,
-        so the position is set here in the peer's own coordinate system - the same
-        one ``wizards/ui/UnoDialog.py`` centres its dialogs in.
-        """
-        area = None
-        parent = _parent_window(self.ctx)
-        if parent is not None:
-            try:
-                area = parent.getPosSize()
-            except Exception:
-                area = None
-        if area is None:
-            return
-        size = self.dialog.getPosSize()
-        x = max(0, area.X + (area.Width - size.Width) // 2)
-        y = max(0, area.Y + (area.Height - size.Height) // 2)
-        try:
-            self.dialog.setPosSize(x, y, size.Width, size.Height, _POS)
-        except Exception:
-            pass
+        centre(self.dialog, self.ctx)
 
     def _preselect_master(self):
         """Deprecated shim: the selection is part of the model now.
@@ -360,16 +612,21 @@ class SettingsDialog(object):
         try:
             current = config.hex_to_color(self._text(name),
                                           self.settings.get(setting, 0))
+            # the deck's colours then the installation's palettes: the order is the
+            # order in which a colour is likely to be wanted.  The recent colours
+            # are *not* another palette - the office's own dropdown shows them as a
+            # captioned group above the grid, and that is what ``recent`` is for.
             entries = []
             document = _current_document(self.ctx)
             if document is not None:
                 entries += palettes.deck_palette(document)
-            entries += palettes.recent_palette(self.settings)
+            recent = palettes.recent_palette(self.settings)
             entries += palettes.load_palettes(self.ctx)
-            config.log(self.ctx, "pick %s: %06X from %s"
-                       % (name, current, [n for n, _c in entries]))
+            config.log(self.ctx, "pick %s: %06X from %s (+%d recent)"
+                       % (name, current, [n for n, _c in entries],
+                          len(recent[0][1]) if recent else 0))
             chosen = picker.pick(self.ctx, entries, current,
-                                 title="Pick a Colour")
+                                 title="Pick a Colour", recent=recent)
         except Exception:
             config.log(self.ctx, "pick failed:\n%s" % traceback.format_exc())
             config.log_error(self.ctx, "pick %s failed" % name)
