@@ -15,7 +15,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1197,7 +1196,7 @@ def the_message_box_is_wide_enough_for_the_path_it_prints():
             % (line, len(line), len(line) * dialog._BOX_CHAR_W,
                dialog._BOX_TEXT_W, room)
     assert path in "".join(lines), "the wrapping lost part of the path: %s" % lines
-    specs, (width, _height) = dialog.box_specs(text, "info", 1, "Debug Log")
+    specs, (width, _height) = dialog.box_specs(text, 1)
     for name, _service, props in specs:
         if not name.startswith("text"):
             continue
@@ -1358,8 +1357,7 @@ def message_box_reports_what_it_says():
     assert dialog.box_lines("") == [""], "an empty message would build a box with no text"
 
     for buttons, labels in ((1, ("OK", "Cancel")), (5, ("Yes", "No"))):
-        specs, (width, height) = dialog.box_specs(_BOX_TEXT, "info", buttons,
-                                                  dialog.TITLE)
+        specs, (width, height) = dialog.box_specs(_BOX_TEXT, buttons)
         controls = dict((name, dict(props)) for name, _service, props in specs)
         text = dict((name, props) for name, props in controls.items()
                     if name.startswith("text"))
@@ -1406,7 +1404,7 @@ def message_box_answers_its_buttons():
              dialog.RESULT_OK, dialog.RESULT_CANCELLED),
             (5, {"yes": dialog.RESULT_YES, "no": dialog.RESULT_NO},
              dialog.RESULT_YES, dialog.RESULT_NO)):
-        box = dialog._build_box(ctx, text, "warning", buttons, dialog.TITLE)
+        box = dialog._build_box(ctx, text, buttons, dialog.TITLE)
         try:
             dialog._show_box(box["dialog"], ctx, dialog.TITLE)
             names = list(box["model"].ElementNames)
@@ -1460,8 +1458,8 @@ def toggling_the_debug_log_says_what_it_did():
     shown = []
     original = dialog.message
 
-    def record(context, text, kind="info", buttons=1, title=dialog.TITLE):
-        shown.append((text, kind, buttons, title))
+    def record(context, text, buttons=1, title=dialog.TITLE):
+        shown.append((text, buttons, title))
         return dialog.RESULT_OK
 
     dialog.message = record
@@ -1470,7 +1468,7 @@ def toggling_the_debug_log_says_what_it_did():
         job.do_debug()
         assert os.path.exists(marker), "no marker: the log would not be written"
         assert shown, "the command showed nothing at all"
-        text, _kind, buttons, _title = shown[0]
+        text, buttons, _title = shown[0]
         assert "enabled" in text and "disabled" not in text, text
         assert path in text, "the box does not say where the log is: %s" % text
         assert buttons == 1, "an OK box is enough: %s" % buttons

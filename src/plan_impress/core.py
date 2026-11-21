@@ -290,10 +290,6 @@ def set_sections(doc, sections):
     return get_sections(doc)
 
 
-def clear_sections(doc):
-    set_sections(doc, [])
-
-
 # --------------------------------------------------------------------------- #
 # page insertion / removal
 # --------------------------------------------------------------------------- #

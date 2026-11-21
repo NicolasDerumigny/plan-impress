@@ -28,7 +28,6 @@ MAX_ENTRIES = 240
 PREFERRED_ORDER = ("standard", "libreoffice", "material", "tonal", "html",
                    "chart-palettes", "compatibility")
 
-_COLOR_ELEMENT = re.compile(r"<draw:color\b", re.IGNORECASE)
 _HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 

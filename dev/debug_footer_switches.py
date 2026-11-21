@@ -22,7 +22,6 @@ sys.path.insert(0, os.path.join(ROOT, "dev"))
 sys.path.insert(0, ROOT + "/src")
 
 import lo  # noqa: E402
-import uno  # noqa: E402
 
 FIXTURE = os.path.join(ROOT, "tests", "fixtures", "sections.odp")
 KINDS = ("HeaderShape", "DateTimeShape", "FooterShape", "SlideNumberShape")

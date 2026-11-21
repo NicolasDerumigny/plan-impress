@@ -51,8 +51,7 @@ def _report(ctx, error):
         pass
     try:
         from plan_impress import dialog
-        dialog.message(ctx, "%s\n\n(See the Plan Impress log for details.)" % error,
-                       "error")
+        dialog.message(ctx, "%s\n\n(See the Plan Impress log for details.)" % error)
     except Exception:
         pass
 
@@ -179,7 +178,7 @@ class PlanJob(unohelper.Base, XJobExecutor):
                 pass
             if isinstance(error, core.PlanError):
                 from plan_impress import dialog
-                dialog.message(self.ctx, str(error), "warning")
+                dialog.message(self.ctx, str(error))
             else:
                 _report(self.ctx, error)
 
@@ -245,7 +244,7 @@ class PlanJob(unohelper.Base, XJobExecutor):
         except Exception:
             pass
         dialog.message(self.ctx, "Debug log %s:\n%s" %
-                       ("enabled, writing to" if enabled else "disabled", path), "info")
+                       ("enabled, writing to" if enabled else "disabled", path))
 
 
 class InsertPlan(PlanJob):

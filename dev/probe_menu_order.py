@@ -1,27 +1,28 @@
 """Print the rows of the *Plan* menu as the office really draws them (debug).
 
-    DISPLAY=:98 python3 dev/probe_menu_order.py
+    DISPLAY=:98 python3 dev/probe_menu_order.py [rows]
 
 ``Addons.xcu`` lists the submenu items in the order they are meant to appear - but the
 office does not hand those children back in that order (fact 98), so the only witness
 for "*Toggle Debug Log* is the last row and a separator is in front of it" is the popup
-itself.  Two things had to be measured before the rows could be counted, and both are
+itself.  Three things had to be measured before the rows could be counted, and each is
 why this probe looks the way it does:
 
-* comparing a screenshot of the desktop with the menu closed against one with it open
-  is **not** a way to find the popup.  Over the toolbar the popup's own background is
-  the colour that was already there, so the difference breaks a run of items in the
-  middle and merges two rows into one 95-pixel band (measured here, twice).  The popup
-  is instead found as the *window* that appears between the two shots:
-  ``xdotool search --maxdepth 1 --onlyvisible`` lists it as a top-level of its own
-  (measured: 215x184 at 402,57 for six items), and inside it the background is uniform,
-  which is what makes a row measurable at all.
-* a separator cannot be found by its line, because in this theme it has none: every row
-  of the gap between two entries is the popup's own ``#383C4A`` at the very bottom of
-  this file's profile dump.  What a separator does leave behind is **air** - the pitch
-  between two rows of letters jumps by about 5 px where one sits.  So the rows are
-  counted, the pitch between them measured, and the positions with extra air compared
-  with the separator positions ``Addons.xcu`` asks for.
+* the popup is **not** found by diffing a screenshot against the closed desktop.  Over
+  the toolbar the popup's own background is the colour that was already there, so the
+  difference broke a run of items in the middle and merged two rows into one 95-pixel
+  band (measured here, twice).  It is instead the *window* that appears between the two
+  window lists: ``xdotool search --maxdepth 1 --onlyvisible`` lists it as a top-level of
+  its own (measured: 215x184 at 402,57 for six items), and inside it the background is
+  uniform, which is what makes a row measurable at all.
+* a separator cannot be looked for by its line, because in this theme it has none: the
+  rows are therefore measured twice, once at the threshold letters clear and once at
+  ``FAINT``, and the dump at the bottom prints every row that is not the popup's own
+  colour however faintly.  A separator drawn as a line would show there; what shows is
+  nothing, and the only sign one is present is the pitch.
+* so the rows are counted, the pitch between them measured, and the positions with
+  extra air compared with the separator positions ``Addons.xcu`` asks for - 29 px
+  between neighbours here, 34 px across a separator.
 
 The click takes a pointer grab (fact 97): the popup is dismissed again in a
 ``finally``, or every later client of the office hangs.
@@ -42,9 +43,10 @@ import lo  # noqa: E402
 
 FIXTURE = os.path.join(ROOT, "tests/fixtures/sections.odp")
 MENU_CLICK = (422, 39)          # "Plan" in the menu bar, as measure_text.py
-OUT = os.path.join(ROOT, "out")
-SHOTS = (os.path.join(OUT, "menu-closed.png"), os.path.join(OUT, "menu-open.png"))
+SHOT = os.path.join(ROOT, "out", "menu-open.png")
 DISTINCT = 24                   # how far a pixel must move to count as ink
+FAINT = 4                       # and how far to count as a faintly drawn line
+BORDERS = 2                     # px of border each row carries: 1 at each side
 LINE = 0.6                      # a run over this share of the width is a drawn line
 AIR = 4                         # px of extra pitch that say a separator sits here
 ICON_COLUMN = 26                # px at the left: an item with an icon has ink there
@@ -106,47 +108,94 @@ def background(pixels):
     return max(seen, key=seen.get)
 
 
-def rows(image, box):
-    """Per row: ``(ink, longest_run, first_inked_column)``, all at ``DISTINCT``."""
+def one_row(line, base, width, threshold):
+    """``(ink, longest_run, first_inked_column)`` of one row at one threshold."""
+    longest = run = ink = first = 0
+    for column, colour in enumerate(line):
+        differs = max(abs(colour[0] - base[0]), abs(colour[1] - base[1]),
+                      abs(colour[2] - base[2])) > threshold
+        run = run + 1 if differs else 0
+        longest = max(longest, run)
+        if differs:
+            ink += 1
+            if not first:
+                first = column
+    return ink, longest, first
+
+
+def row_profile(image, box):
+    """Per row, at ``DISTINCT`` and at ``FAINT``: ``((ink, run, left), (ink,..))``."""
     crop = image.crop(box)
     width, height = crop.size
     pixels = list(crop.getdata())                # one (red, green, blue) per pixel
     base = background(pixels)
-    profile = []
-    for row in range(height):
-        longest = run = ink = first = 0
-        for column, colour in enumerate(pixels[row * width:(row + 1) * width]):
-            differs = max(abs(colour[0] - base[0]), abs(colour[1] - base[1]),
-                          abs(colour[2] - base[2])) > DISTINCT
-            run = run + 1 if differs else 0
-            longest = max(longest, run)
-            if differs:
-                ink += 1
-                if not first:
-                    first = column
-        profile.append((ink, longest, first))
-    return profile, base
+    return [tuple(one_row(pixels[row * width:(row + 1) * width], base, width,
+                          threshold) for threshold in (DISTINCT, FAINT))
+            for row in range(height)], base
 
 
 def bands(profile):
-    """Group the rows that carry ink into bands: ``[(first, last, ink, run, left)]``."""
-    found, start = [], None
-    for row, (ink, run, first) in enumerate(profile):
-        if ink:
-            if start is None:
-                start = row
-                found.append([start, row, ink, run, first])
-            elif found[-1][1] == row - 1:
-                found[-1][1] = row
-                found[-1][2] += ink
-                found[-1][3] = max(found[-1][3], run)
-                found[-1][4] = min(found[-1][4], first)
-            else:                                # dead air between two entries
-                found.append([start, row, ink, run, first])
-                start = row
+    """Group the rows that carry ink into bands: ``[(first, last, ink, run, left)]``.
+
+    A new band starts at the first row after one that carries no ink: the gap is what
+    separates two entries, and the width of that gap is the whole question.
+    """
+    found = []
+    for row, ((ink, run, left), _faint) in enumerate(profile):
+        if not ink:
+            continue
+        if found and found[-1][1] == row - 1:
+            found[-1][1] = row
+            found[-1][2] += ink
+            found[-1][3] = max(found[-1][3], run)
+            found[-1][4] = min(found[-1][4], left)
         else:
-            start = None
+            found.append([row, row, ink, run, left])
     return [tuple(band) for band in found]
+
+
+def say_gaps(profile, found, width, dump=False):
+    """What the air between two rows is painted with - the separator question.
+
+    The popup paints a 1 px border on each side, so *every* row carries about
+    ``BORDERS`` px of ink at the faint threshold, and its top and bottom rows are a line
+    across the whole width - the frame, said once here and left out of the gaps below.
+    Anything else more than ``BORDERS``, and above all a run across the width, would be
+    something the theme actually drew.  Each band of rows between two rows of letters is
+    therefore summarised rather than dumped, and a separator drawn as a line could not
+    pass this unnoticed.  ``probe_menu_order.py rows`` prints every row as well.
+    """
+    inked = set()
+    for first, last, _ink, _run, _left in found:
+        inked.update(range(first, last + 1))
+    frame = [row for row in (0, len(profile) - 1)
+             if profile[row][1][0] >= LINE * width]
+    inked.update(frame)
+    say("  the popup's own frame: rows %s (a line across the width)"
+        % " and ".join(str(row) for row in frame))
+    gap = []
+    for row in range(len(profile)):
+        if row not in inked:
+            gap.append(row)
+        elif gap:
+            say_gap(gap, profile)
+            gap = []
+    if gap:
+        say_gap(gap, profile)
+    if dump:
+        say("  every row, at %d/255 then at %d/255:" % (DISTINCT, FAINT))
+        for row, ((ink, run, left), (fink, frun, fleft)) in enumerate(profile):
+            say("    %3d  ink %4d run %4d x=%-3d   ink %4d run %4d x=%-3d"
+                % (row, ink, run, left, fink, frun, fleft))
+
+
+def say_gap(gap, profile):
+    """One line per band of rows that carries no letters."""
+    most = max(profile[row][1][0] for row in gap)        # most ink, at FAINT
+    wide = max(profile[row][1][1] for row in gap)        # longest run, at FAINT
+    say("  air y %3d..%-3d  %2d rows   most ink %3d   longest run %3d  %s"
+        % (gap[0], gap[-1], len(gap), most, wide,
+           "no line drawn" if most <= BORDERS else "SOMETHING IS DRAWN HERE"))
 
 
 def wanted_separator_rows():
@@ -188,20 +237,19 @@ def main():
         xdo("search", "--name", "sections.odp", "windowsize", "1440", "870")
         time.sleep(2.0)
         before = windows()
-        closed = shoot(SHOTS[0])                                   # noqa: F841
         xdo("mousemove", str(MENU_CLICK[0]), str(MENU_CLICK[1]), "click", "1")
         time.sleep(1.2)
         new = [window for window in windows().items() if window[0] not in before]
         try:
-            opened = shoot(SHOTS[1])
+            opened = shoot(SHOT)
         finally:
             dismiss()                            # fact 97
         if not new:
             raise AssertionError("no new window appeared: the click opened no menu")
         (ident, (left, top, width, height)), = new
-        say("the popup is window %s: %dx%d at %d,%d" % (ident, width, height,
-                                                        left, top))
-        profile, base = rows(opened, (left, top, left + width, top + height))
+        say("the popup is window %s: %dx%d at %d,%d"
+            % (ident, width, height, left, top))
+        profile, base = row_profile(opened, (left, top, left + width, top + height))
         found = bands(profile)
         lines = [band for band in found if band[3] >= LINE * width]
         items = [band for band in found if band[3] < LINE * width]
@@ -215,14 +263,11 @@ def main():
                height))
         separators = []
         for number, (first, last, ink, longest, left) in enumerate(items):
-            if number:
-                pitch = first - items[number - 1][0]
-                if pitch - tight >= AIR:
-                    separators.append(number + 1)
+            if number and first - items[number - 1][0] - tight >= AIR:
+                separators.append(number + 1)
             # the leftmost ink of a row: an icon would sit at x < ICON_COLUMN, and here
-            # every row starts at x=30, which is where the words start - this office
-            # draws no icons in a popup menu at all, so an icon cannot tell the rows
-            # apart and the pitch has to carry the whole argument
+            # every row starts at x=30, where the words start - this office draws no
+            # icons in a popup, so the pitch has to carry the whole argument
             say("  %d  y %3d..%-3d  %2d px tall  ink %5d  longest run %4d  ink from "
                 "x=%-3d %s"
                 % (number + 1, first, last, last - first + 1, ink, longest, left,
@@ -232,7 +277,8 @@ def main():
             "office puts air in front of rows %s -> %s"
             % (count, asked, separators,
                "MATCHES" if separators == asked else "DOES NOT MATCH"))
-        say("screenshots: %s and %s" % SHOTS)
+        say_gaps(profile, found, width, dump="rows" in sys.argv)
+        say("screenshot: %s" % SHOT)
     finally:
         lo.close(doc)
     return 0

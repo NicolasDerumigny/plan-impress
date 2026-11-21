@@ -19,7 +19,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "dev"))
 
 import lo  # noqa: E402
-import uno  # noqa: E402
 
 MODULES = ("com.sun.star.awt", "com.sun.star.ui", "com.sun.star.ui.dialogs",
            "com.sun.star.staroffice", "com.sun.star.beans", "com.sun.star.util",

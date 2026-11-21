@@ -36,15 +36,12 @@ from plan_impress import config, core, swatch
 
 TITLE = "Plan Impress"
 
-# com.sun.star.awt.MessageBoxType
-_MSGBOX = 0
-_WARNINGBOX = 3
-_ERRORBOX = 4
-# com.sun.star.awt.MessageBoxButtons
+#: The two shapes a message box comes in, in the tokens the office's own
+#: ``MessageBoxButtons`` uses: 1 for OK, 5 for Yes/No (fact 32).  ``message`` no
+#: longer calls ``createMessageBox`` at all (fact 71), so these are only how a
+#: caller says how many buttons it wants.
 _OK = 1
 _YES_NO = 5
-# com.sun.star.awt.MessageBoxResults
-_RESULT_YES = 6
 
 
 def _toolkit(ctx):
@@ -125,11 +122,14 @@ def box_size(text):
             2 * _BOX_MARGIN + len(lines) * _BOX_LINE_H + _BOX_GAP + _BOX_BUTTON_H)
 
 
-def box_specs(text, kind, buttons, title):
+def box_specs(text, buttons):
     """The box's controls as ``(name, service, [(property, value)])``.
 
     Split out from the UNO calls so the geometry can be tested without a display,
-    the way ``dialog._field_specs`` and ``picker._field_specs`` are.
+    the way ``dialog._field_specs`` and ``picker._field_specs`` are.  There is no
+    *kind* of box any more: the office's ``MessageBoxType`` went with
+    ``createMessageBox`` (fact 71), and a warning is an information box with the
+    same words in it.
     """
     width, height = box_size(text)
     service = "com.sun.star.awt.UnoControlButtonModel"
@@ -162,7 +162,7 @@ def box_specs(text, kind, buttons, title):
     return specs, (width, height)
 
 
-def message(ctx, text, kind="info", buttons=_OK, title=TITLE):
+def message(ctx, text, buttons=_OK, title=TITLE):
     """Show a modal message box; returns RESULT_OK / RESULT_YES / RESULT_NO / 0.
 
     ``Toolkit.createMessageBox`` cannot be used: on this office it is
@@ -182,7 +182,7 @@ def message(ctx, text, kind="info", buttons=_OK, title=TITLE):
     """
     box = None
     try:
-        box = _build_box(ctx, text, kind, buttons, title)
+        box = _build_box(ctx, text, buttons, title)
         _show_box(box["dialog"], ctx, title)
         _listen_for_keys(box, ctx)          # the peer exists only now
         box["dialog"].execute()
@@ -200,7 +200,7 @@ def message(ctx, text, kind="info", buttons=_OK, title=TITLE):
     return box["state"]["result"]
 
 
-def _build_box(ctx, text, kind, buttons, title):
+def _build_box(ctx, text, buttons, title):
     """The box with its controls and listeners, without the modal loop.
 
     Split out of :func:`message` because a modal box cannot be looked at from the
@@ -223,7 +223,7 @@ def _build_box(ctx, text, kind, buttons, title):
     model = manager.createInstanceWithContext(
         "com.sun.star.awt.UnoControlDialogModel", ctx)
     dialog.setModel(model)
-    specs, (width, height) = box_specs(text, kind, buttons, title)
+    specs, (width, height) = box_specs(text, buttons)
     for property_name, value in (("Width", width), ("Height", height)):
         try:
             model.setPropertyValue(property_name, value)
@@ -335,7 +335,7 @@ def _show_box(dialog, ctx, title):
 
 
 def confirm(ctx, text):
-    return message(ctx, text, "warning", _YES_NO) == RESULT_YES
+    return message(ctx, text, _YES_NO) == RESULT_YES
 
 
 # --------------------------------------------------------------------------- #

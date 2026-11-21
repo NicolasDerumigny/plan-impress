@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.join(ROOT, "dev"))
 sys.path.insert(0, ROOT + "/src")
 
 import lo  # noqa: E402
-import uno  # noqa: E402
 from plan_impress import config, dialog  # noqa: E402
 
 POS_SIZE = 3

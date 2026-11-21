@@ -59,8 +59,8 @@ def show_our_box(ctx, name):
     """Call :func:`plan_impress.dialog.message` and return what it answers."""
     from plan_impress import dialog
     if name == "our-own yes-no":
-        return dialog.message(ctx, TEXT, "warning", 5, TITLE)
-    return dialog.message(ctx, TEXT, "info", 1, TITLE)
+        return dialog.message(ctx, TEXT, 5, TITLE)
+    return dialog.message(ctx, TEXT, 1, TITLE)
 
 
 def snapshot_and_dismiss(name):
