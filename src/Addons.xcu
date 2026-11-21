@@ -99,6 +99,36 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
+                                <node oor:name="mm41" oor:op="replace">
+                                    <prop oor:name="Title" oor:type="xs:string">
+                                        <value xml:lang="en-US">Section Titles</value>
+                                        <value xml:lang="fr">Titres de section</value>
+                                    </prop>
+                                    <prop oor:name="URL" oor:type="xs:string">
+                                        <value>service:org.devsys.planimpress.SectionTitles?section_titles</value>
+                                    </prop>
+                                    <prop oor:name="Target" oor:type="xs:string">
+                                        <value>_self</value>
+                                    </prop>
+                                    <prop oor:name="Context" oor:type="xs:string">
+                                        <value>com.sun.star.presentation.PresentationDocument</value>
+                                    </prop>
+                                </node>
+                                <node oor:name="mm42" oor:op="replace">
+                                    <prop oor:name="Title" oor:type="xs:string">
+                                        <value xml:lang="en-US">Remove Section Titles</value>
+                                        <value xml:lang="fr">Supprimer les titres de section</value>
+                                    </prop>
+                                    <prop oor:name="URL" oor:type="xs:string">
+                                        <value>service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles</value>
+                                    </prop>
+                                    <prop oor:name="Target" oor:type="xs:string">
+                                        <value>_self</value>
+                                    </prop>
+                                    <prop oor:name="Context" oor:type="xs:string">
+                                        <value>com.sun.star.presentation.PresentationDocument</value>
+                                    </prop>
+                                </node>
                                 <node oor:name="mm5" oor:op="replace">
                                     <prop oor:name="URL" oor:type="xs:string">
                                         <value>private:separator</value>
@@ -164,6 +194,32 @@
                     </prop>
                     <prop oor:name="ImageBigURL" oor:type="xs:string">
                         <value>%origin%/icons/remove_26.png</value>
+                    </prop>
+                </node>
+            </node>
+            <node oor:name="org.devsys.planimpress.section.images" oor:op="replace">
+                <prop oor:name="URL" oor:type="xs:string">
+                    <value>service:org.devsys.planimpress.SectionTitles?section_titles</value>
+                </prop>
+                <node oor:name="UserDefinedImages">
+                    <prop oor:name="ImageSmallURL" oor:type="xs:string">
+                        <value>%origin%/icons/section_16.png</value>
+                    </prop>
+                    <prop oor:name="ImageBigURL" oor:type="xs:string">
+                        <value>%origin%/icons/section_26.png</value>
+                    </prop>
+                </node>
+            </node>
+            <node oor:name="org.devsys.planimpress.section_remove.images" oor:op="replace">
+                <prop oor:name="URL" oor:type="xs:string">
+                    <value>service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles</value>
+                </prop>
+                <node oor:name="UserDefinedImages">
+                    <prop oor:name="ImageSmallURL" oor:type="xs:string">
+                        <value>%origin%/icons/section_remove_16.png</value>
+                    </prop>
+                    <prop oor:name="ImageBigURL" oor:type="xs:string">
+                        <value>%origin%/icons/section_remove_26.png</value>
                     </prop>
                 </node>
             </node>

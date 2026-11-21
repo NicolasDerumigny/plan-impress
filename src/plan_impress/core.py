@@ -1777,3 +1777,492 @@ def insert_plan(doc, settings, ctx=None):
 def remove_plan(doc):
     """Remove the plan slides.  Returns how many were deleted."""
     return remove_plan_slides(doc)
+
+
+# --------------------------------------------------------------------------- #
+# the section-name box
+# --------------------------------------------------------------------------- #
+#
+# ``*Section Titles*`` writes the name of a slide's section into a text box on that
+# slide.  The box is drawn on a slide the *user* made, so two things matter:
+#
+# * it has to be recognisable afterwards, because the command is meant to be run
+#   again after the sections are renamed, moved or - the case that really happens -
+#   after a slide has been duplicated, and a re-run updates the boxes it made rather
+#   than painting another one over them; and
+# * nothing else on the slide may be touched, and nothing may be invented: the deck's
+#   own slides are the template (fact 54) and the box is given the deck's look.
+#
+# Recognition is by the shape's **name**, and by prefix only.  A duplicated slide
+# brings a copy of every shape it had, name included, so the box on the copy is found
+# by the same prefix - which is the behaviour the test
+# ``section_titles_survive_a_duplicated_slide`` pins: add the boxes, duplicate a
+# slide, run again, and the copy says the name of the section it now belongs to
+# instead of keeping the one it was copied with.  The page position is part of the
+# name (``...Slide:4``) so a log or a macro can point at one box, but it is never
+# *compared*: positions move, the prefix does not.
+
+#: Every box this command draws starts its name with this.
+SECTION_TEXT_PREFIX = PLAN_PREFIX + "SectionText:Slide:"
+
+#: A box is a plain ``com.sun.star.drawing.TextShape``: a presentation placeholder
+#: would be re-dealt by the layout and snapped back to the master (facts 21 and 53),
+#: and this box belongs where the user - or these settings - put it.
+SECTION_BOX_SERVICE = "com.sun.star.drawing.TextShape"
+
+#: The character properties the box copies from the deck's own body text, and the
+#: three the settings are allowed to overrule.
+SECTION_BOX_ATTRIBUTES = ("CharFontName", "CharFamily", "CharStyleName",
+                          "CharHeight", "CharWeight", "CharPosture", "CharColor")
+
+#: Air between the box and whatever is above it, and under the first row of the
+#: content placeholder, in 1/100 mm: two millimetres.
+_SECTION_GAP = 200
+#: How far from the top of the slide a box may be pushed at most when the deck's own
+#: content starts that high: 1/100 mm.
+_SECTION_MIN_Y = 200
+
+
+def section_text_name(index):
+    """The name a section box carries: ``PlanImpress:SectionText:Slide:4``.
+
+    ``index`` is the page position, and the name counts from 1 like the slide numbers
+    on the screen.  It is what a macro or a log line points at; the code recognises a
+    box by :data:`SECTION_TEXT_PREFIX` alone, because the position moves.
+    """
+    return "%s%d" % (SECTION_TEXT_PREFIX, int(index) + 1)
+
+
+def _is_section_box(shape):
+    """True for a box this command drew: its name says so, and nothing else does."""
+    try:
+        return str(shape.Name).startswith(SECTION_TEXT_PREFIX)
+    except Exception:
+        return False
+
+
+def section_text_shapes(page):
+    """Every section box on ``page``, in the order the slide keeps them.
+
+    More than one is possible - a slide duplicated from a slide whose box was copied
+    by hand, or two runs before this recognised the copy - and they all get the same
+    text, because a slide has one section and they are stacked on the same rectangle.
+    """
+    out = []
+    try:
+        count = page.Count
+    except Exception:
+        return out
+    for i in range(count):
+        try:
+            shape = page.getByIndex(i)
+        except Exception:
+            continue
+        if _is_section_box(shape):
+            out.append(shape)
+    return out
+
+
+def section_of(sections, index):
+    """The name of the section page ``index`` belongs to, or ``None``.
+
+    What the section list *means* is a contiguous range of positions (fact 12), so a
+    slide belongs to the last section that starts at or before it - and to none at all
+    before the first section starts, which is the "except the firsts (without
+    section)" of the request: a title slide that leads the deck stays untouched.
+    """
+    named = [entry for entry in (sections or [])
+             if entry.get("indexes") and entry.get("start", -1) >= 0]
+    if not named:
+        return None
+    named.sort(key=lambda entry: entry["start"])
+    if index < named[0]["start"]:
+        return None
+    name = None
+    for entry in named:
+        if entry["start"] <= index:
+            name = entry["name"]
+    return name
+
+
+def _section_shapes(doc, master):
+    """The two shapes the box copies its look from: the deck's body and its title."""
+    title, body = _style_source(doc, master)
+    return body if body is not None else title
+
+
+def _read_look(shape):
+    """The character properties of ``shape``, taken from its first paragraph.
+
+    A text shape's own values are only the default underneath its paragraphs (fact
+    55), so the paragraph is asked first - which is what a box the user restyled by
+    hand actually says about itself.
+    """
+    source = _first_paragraph(shape)
+    if source is None:
+        source = shape
+    look = {}
+    for name in SECTION_BOX_ATTRIBUTES:
+        try:
+            look[name] = source.getPropertyValue(name)
+        except Exception:
+            continue
+    return look
+
+
+def _heading_top(shape, point_size):
+    """The highest point a heading paints, or ``None`` when it will not say.
+
+    The counterpart of :func:`_heading_bottom`, and needed for the same reason:
+    text is anchored in the *middle* of a presentation placeholder's box, so the
+    top of the box is not where the letters are (fact 56).  Putting the section
+    label at the top of the title's box rather than above its letters is what made
+    it print through the slide's own heading.
+    """
+    if shape is None:
+        return None
+    try:
+        top = int(shape.Position.Y)
+        height = int(shape.Size.Height)
+    except Exception:
+        return None
+    line = int(point_size * _UNITS_PER_POINT * _LINE_SPACING)
+    anchor = _text_anchor(shape)
+    if anchor == "bottom":
+        return max(top, top + height - line)
+    if anchor == "centre":
+        return max(top, top + (height - line) // 2)
+    return top
+
+
+def _section_box_rect(doc, master, settings, point_size):
+    """``(x, y, width, height)`` for a box, in 1/100 mm.
+
+    The left margin and the width come from the deck's own content placeholder -
+    that is the "top-left of the slide, at the deck's own content margin" the box
+    is meant to sit at - and the settings overrule any of the three that says a
+    number.  The height is one line of the text plus the air, because the box is
+    one line long by construction.
+
+    Vertically it goes **above the heading the slide already has**, because a
+    section name is the running head of the slide.  Measured with
+    ``pdftotext -bbox`` on the fixture (`dev/render_section_titles.py` prints it):
+    the heading paints from 2282 to 4015 while a box put between the heading and
+    the content paints from 1988 to 3249 - the two bands overlap, and only the
+    fixture's *centred* heading kept them from landing on each other's glyphs.
+    Below the heading is the fallback for a deck whose heading already starts at
+    the top of the slide.
+    """
+    height = int(round(point_size * _UNITS_PER_POINT * _LINE_SPACING)) + 100
+    title, body = _style_source(doc, master)
+    if body is None:
+        body = title                          # a template with one placeholder only
+    x = width = y = None
+    if body is not None:
+        try:
+            x = int(body.Position.X)
+            width = int(body.Size.Width)
+        except Exception:
+            x = width = None
+        head_point = _master_char_height(title, _TITLE_PT) if title is not None \
+            else _TITLE_PT
+        above = _heading_top(title, head_point)
+        below = _heading_bottom(
+            int(title.Position.Y), int(title.Size.Height), head_point,
+            _text_anchor(title)) if title is not None else None
+        if above is not None and above - height - _SECTION_GAP >= _SECTION_MIN_Y:
+            y = above - height - _SECTION_GAP     # the running head, above the title
+        elif below is not None:
+            y = below + _SECTION_GAP              # no room: under the heading
+        else:
+            try:
+                y = int(body.Position.Y) - height - _SECTION_GAP
+            except Exception:
+                y = None
+    if x is None:                             # a master with nothing to copy
+        # the page's own size is ``page.Width``/``page.Height`` - a DrawPage has no
+        # ``Size`` property, unlike the shapes on it
+        try:
+            page_width = int(doc.DrawPages.getByIndex(0).Width)
+            x, width = int(page_width * 0.05), int(page_width * 0.9)
+        except Exception:
+            x, width = 2000, 21400
+        y = _SECTION_MIN_Y
+    settings_values = ((settings.get("section_x"), "x"),
+                       (settings.get("section_y"), "y"),
+                       (settings.get("section_width"), "width"))
+    for value, which in settings_values:
+        length = config_length(value)
+        if length is None:
+            continue
+        if which == "x":
+            x = length
+        elif which == "y":
+            y = length
+        else:
+            width = length
+    return x, max(_SECTION_MIN_Y, int(y)), int(width), height
+
+
+def config_length(value):
+    """A length from the settings as an int, or ``None`` for "ask the deck".
+
+    Lives here rather than in :mod:`plan_impress.config` because :mod:`core` must not
+    import the UI half but may read what it was handed; ``config.load`` sanitises the
+    same values on the way in, and this is the belt for a caller that built the
+    dictionary itself.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        length = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return length if length >= 0 else None
+
+
+def _apply_look(target, look):
+    """Write character properties onto one target; what it refuses is skipped.
+
+    Paragraphs have no ``CharStyleName`` and a shape may refuse a family name, so
+    refusing is the normal case here and not an error (fact 52 is the same rule read
+    the other way round: the properties have to be written on the shape *and* on the
+    paragraphs, because a paragraph of a text shape takes its characters from the
+    page style's outline level and overrides the shape).
+    """
+    for attribute, value in sorted(look.items()):
+        if value is None:
+            continue
+        try:
+            target.setPropertyValue(attribute, value)
+        except Exception:
+            continue
+
+
+def _paint_section_box(shape, name, look, rect):
+    """One box: its look, its text, its place.  Everything the command writes."""
+    x, y, width, height = rect
+    # the look goes on the shape *before* the text: the paragraph ``setString``
+    # creates inherits from the shape, and after it as well, because a paragraph of a
+    # text shape may take its characters from the page style instead (fact 52)
+    _draw_flat(shape)                     # never on a plate, every run (fact 88)
+    _apply_look(shape, look)
+    shape.setString(str(name))
+    for paragraph in _paragraphs_of(shape):
+        _apply_look(paragraph, look)
+    # measured once, on a box of a slide whose neighbour had just been duplicated:
+    # the paragraph enumeration answered nothing at all, in which case the shape is
+    # the only thing that can still be told - ask it again after the text is in
+    if not _paragraphs_of(shape):
+        _apply_look(shape, look)
+    try:
+        shape.Size = _size(width, height)
+        shape.Position = _point(x, y)
+    except Exception:
+        pass
+    for attribute, value in (("TextAutoGrowHeight", False),
+                             ("TextAutoGrowWidth", False),
+                             ("TextWordWrap", True),
+                             ("TextAnchor", 0),        # awt TOP, fact 22
+                             ("TextAnchorKind", 1)):   # drawing TOP
+        try:
+            shape.setPropertyValue(attribute, value)
+        except Exception:
+            pass
+    return shape
+
+
+#: What has to be switched off for the label to be painted over the slide instead of
+#: on a plate.  Measured on a clean office: a ``TextShape`` from ``createInstance``
+#: answers ``FillStyle = SOLID`` and ``LineStyle = SOLID``, and Impress hands a new shape
+#: the attributes of the *last shape created in that office session* - so on a deck where
+#: somebody last drew a filled box, the section name would arrive on a grey rectangle.
+#: The two are therefore written on every run, not only at creation: a box that picked a
+#: fill up (from a duplicated slide, a template, or that last-used look) is flat again
+#: after the next *Section Titles*, which is what makes the command idempotent.
+_FLAT_DRAWING = (("FillStyle", 0), ("LineStyle", 0),
+                 ("Shadow", False), ("ClickThrough", True))
+
+
+def _draw_flat(shape):
+    """Give ``shape`` no fill, no frame and no shadow; what it refuses is skipped."""
+    for attribute, value in _FLAT_DRAWING:
+        try:
+            shape.setPropertyValue(attribute, value)
+        except Exception:
+            continue
+
+
+def _new_section_box(doc, page, name):
+    """A fresh text box on ``page``, with nothing on it yet, or ``None``.
+
+    A plain ``TextShape`` is created with a fill and a frame, which would put a grey
+    rectangle behind the section name, so both are switched off - and a box that
+    cannot be switched off is not drawn at all rather than drawn wrong.
+    """
+    try:
+        shape = doc.createInstance(SECTION_BOX_SERVICE)
+    except Exception:
+        return None
+    try:
+        page.add(shape)
+    except Exception:
+        return None
+    _draw_flat(shape)
+    try:
+        shape.Name = name
+    except Exception:
+        pass
+    return shape
+
+
+def apply_section_titles(doc, settings, ctx=None):
+    """Write each slide's section name into a box on that slide; returns a report.
+
+    The slides before the first section get nothing (they have no section), and
+    neither do the generated plan slides (they name their section already, in the
+    heading).  A box that is there is updated where it stands - position, size,
+    characters and text - and no second box is created beside it, which is what
+    "similarly to the plan slides, re-trigger updates the content and do not create
+    new textboxes" asks for.  A box on a slide that has *lost* its section, or on a
+    plan slide, is taken away: a re-run leaves nothing of the old layout behind.
+
+    With ``section_follow_first`` the look - font, size, colour, and the rectangle -
+    is taken from the box on the first slide that has one, so restyling that one
+    slide by hand and re-running the command restyles the whole deck; with it off,
+    the settings say and the deck's own body text fills in what they leave empty.
+    """
+    pages = doc.DrawPages
+    sections = get_sections(doc)
+    if not [entry for entry in sections if entry.get("indexes")]:
+        raise PlanError("This presentation has no sections, so there is no section "
+                        "name to write.  Add one with Slide > Insert Section first.")
+    master = _master_page(doc, settings.get("master"))
+    follow = bool(settings.get("section_follow_first"))
+
+    report = {"written": 0, "created": 0, "updated": 0, "cleared": 0,
+              "skipped_plan": 0, "skipped_outside": 0,
+              "sections": [entry["name"] for entry in sections
+                           if entry.get("indexes")],
+              "master": str(master.Name), "look": "the settings"}
+
+    # the slide whose box decides the look when the toggle is on: the first one that
+    # has a box and is meant to have one, so a hand-styled header propagates and a
+    # stray box on a title slide cannot set the pattern
+    template_box = None
+    if follow:
+        for index in range(pages.Count):
+            try:
+                page = pages.getByIndex(index)
+            except Exception:
+                continue
+            if _is_plan_page(page) or section_of(sections, index) is None:
+                continue
+            boxes = section_text_shapes(page)
+            if boxes:
+                template_box = boxes[0]
+                report["look"] = "the first section slide's own box"
+                break
+
+    deck_body = _section_shapes(doc, master)
+    deck_look = _read_look(deck_body) if deck_body is not None else {}
+
+    for index in range(pages.Count):
+        try:
+            page = pages.getByIndex(index)
+        except Exception:
+            continue
+        name = section_of(sections, index)
+        boxes = section_text_shapes(page)
+        if _is_plan_page(page) or name is None:
+            # nothing belongs on this slide: a box it carries is left over from a run
+            # before the slide moved out of its section
+            for shape in boxes:
+                _drop_shape(page, shape)
+                report["cleared"] += 1
+            if _is_plan_page(page):
+                report["skipped_plan"] += 1
+            else:
+                report["skipped_outside"] += 1
+            continue
+
+        if template_box is not None:
+            # the first box says what every box looks like, right down to where it
+            # sits: that is the point of the toggle, to let one slide be styled by
+            # hand and the rest follow it
+            look = _read_look(template_box)
+            rect = _box_rect_of(template_box) or _section_box_rect(
+                doc, master, settings, look.get("CharHeight") or _BODY_PT)
+        else:
+            look = dict(deck_look)
+            size = float(settings.get("section_size") or 0)
+            if not size:
+                size = _master_char_height(deck_body, _BODY_PT)
+            look["CharHeight"] = size
+            colour = settings.get("section_color")
+            if colour is not None:
+                look["CharColor"] = int(colour) & 0xFFFFFF
+            font = str(settings.get("section_font") or "").strip()
+            if font:
+                look["CharFontName"] = font
+            rect = _section_box_rect(doc, master, settings, size)
+
+        if not boxes:
+            shape = _new_section_box(doc, page, section_text_name(index))
+            if shape is None:
+                continue
+            report["created"] += 1
+        else:
+            shape = boxes[0]
+            report["updated"] += 1
+            for extra in boxes[1:]:            # a copied slide can bring a second one
+                _drop_shape(page, extra)
+                report["cleared"] += 1
+        try:
+            shape.Name = section_text_name(index)
+        except Exception:
+            pass
+        _paint_section_box(shape, name, look, rect)
+        report["written"] += 1
+        if template_box is None:
+            # the box just written is the look every later slide copies, when the
+            # deck itself has nothing to say and the toggle is on
+            template_box = shape if follow else None
+    return report
+
+
+def _box_rect_of(shape):
+    """A box's own rectangle, or ``None`` if it will not say."""
+    try:
+        return (int(shape.Position.X), int(shape.Position.Y),
+                int(shape.Size.Width), int(shape.Size.Height))
+    except Exception:
+        return None
+
+
+def _drop_shape(page, shape):
+    try:
+        page.remove(shape)
+        return True
+    except Exception:
+        return False
+
+
+def remove_section_titles(doc):
+    """Take every section-name box out of the deck; returns how many were deleted.
+
+    Every page is walked, plan slides included: the command is "get rid of what
+    *Section Titles* drew", and a box left on a slide that has just lost its section
+    is the kind of thing that makes the next run look broken.
+    """
+    pages = doc.DrawPages
+    removed = 0
+    for index in range(pages.Count):
+        try:
+            page = pages.getByIndex(index)
+        except Exception:
+            continue
+        for shape in section_text_shapes(page):
+            if _drop_shape(page, shape):
+                removed += 1
+    return removed

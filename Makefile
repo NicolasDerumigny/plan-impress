@@ -49,10 +49,15 @@ unit:
 	$(PY) tests/run_tests.py colour
 	$(PY) tests/run_tests.py point_size
 	$(PY) tests/run_tests.py list_label
+	$(PY) tests/run_tests.py position_fields
 	$(PY) tests/run_tests.py dialog_field
 	$(PY) tests/run_tests.py picker_cells
 	$(PY) tests/run_tests.py picker_is_the
 	$(PY) tests/run_tests.py picker_paints
+	$(PY) tests/run_tests.py swatch_is
+	$(PY) tests/run_tests.py colour_contrasts
+	$(PY) tests/run_tests.py dark_theme
+	$(PY) tests/run_tests.py chooser_is_wide
 	$(PY) tests/run_tests.py message_box_reports
 	$(PY) tests/run_tests.py toggling_the_debug
 

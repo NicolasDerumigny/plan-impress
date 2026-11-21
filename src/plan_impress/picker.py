@@ -22,23 +22,27 @@ Clicking a colour is the answer, as in the real dropdown: no OK needed.  OK is
 there for the typed hex value (Enter is OK, the button is the dialog's default),
 and Cancel or Escape leaves the setting as it was.
 
-Three measurements decided this construction (``dev/probe_paint.py`` and
-``dev/probe_swatch_look.py``):
+Three measurements decided this construction (``dev/probe_paint.py``,
+``dev/probe_swatch_look.py``, ``dev/probe_swatch_ring.py``):
 
-* a control's **paint** listener is never called, so the grid cannot be *drawn*;
-* a **button** is therefore the obvious square to fill with a colour - and it is
-  wrong, because the office paints a button with its theme's raised bevel, which
-  is the "perspective-style border" around every colour that was reported.  A
-  button model has no ``Border`` either (fact 65), so there is nothing to switch
-  off.  A **label** (``UnoControlFixedTextModel``) paints the same colour flat and
-  does have ``Border``, which is the one-px solid line the office's own grid has:
-  the squares are labels, from the palette to the chip under it;
-* a control's **mouse** listener *does* fire, which is what makes both the hover
-  read-out and the click possible - a label has no action source, so picking a
+* a control's **paint** listener is never called, so the grid cannot be *drawn* by a
+  listener - it has to be drawn in advance, as a bitmap;
+* the colour itself goes on an **image control**, not a button and not a label.  A
+  button brings the theme's raised bevel with it, which is the "perspective-style
+  border" around every colour that was reported, and its model has no ``Border`` to
+  switch it off with (fact 65).  A label paints the colour flat and can be given a
+  line - but only in the theme's own colour: ``BorderColor`` is ignored in every
+  ``BorderStyle``, so on a dark theme a black square had no edge at all
+  (``dev/probe_border_colour.py``, fact 78).  An image control paints whatever it is
+  given, and what it is given is a PNG of the colour inside a one-pixel line of the
+  *contrast* colour (:mod:`plan_impress.swatch`), which is how the office's own
+  dropdown draws them;
+* an image control's **mouse** listener *does* fire, which is what makes both the hover
+  read-out and the click possible - it has no action source either, so picking a
   colour is ``mouseReleased``, not ``actionPerformed``.
 
-What a label cannot do is take the tab focus, so the grid is not keyboard
-navigable; the hex field beside OK is the keyboard route to a colour.
+What no square can do is take the tab focus, so the grid is not keyboard navigable; the
+hex field beside OK is the keyboard route to a colour.
 """
 
 import traceback
@@ -47,7 +51,7 @@ import unohelper
 from com.sun.star.awt import XActionListener, XItemListener, XMouseListener, \
     XTextListener
 
-from plan_impress import config
+from plan_impress import config, swatch
 
 # --------------------------------------------------------------------------- #
 # the grid
@@ -58,14 +62,26 @@ COLUMNS = 10
 #: Rows of squares the grid can ever show - the recent group takes one of them.
 ROWS = 6
 #: The controls a colour is painted on, created once and then re-pointed at the
-#: colours of whatever is showing: the grid cannot be drawn (fact 64) and a button
-#: would bring the theme's bevel with it (fact 77), so it is one label per square.
+#: colours of whatever is showing: the grid cannot be drawn (fact 64), a button would
+#: bring the theme's bevel with it (fact 77) and a label cannot draw a line of a
+#: colour we choose (fact 78), so it is one image control per square, each carrying a
+#: bitmap :mod:`plan_impress.swatch` draws.
 CELLS = COLUMNS * ROWS
 
-#: One dialog unit is about 2.5 px of peer geometry (AGENTS.md fact 28), so a cell
-#: is ~23 x 18 px: the size of the office's own swatches.
-CELL_W = 9
-CELL_H = 7
+#: A square of colour has to be square in *pixels*, and a dialog unit is not square:
+#: one unit is 2.53 px across and 2.39 px down (AGENTS.md fact 28), so equal units are
+#: not equal pixels.  ``dev/probe_picker_ink.py`` paints candidate pairs and photographs
+#: them - 9 x 7 units, the size this used, comes back a 23 x 17 rectangle ("the color
+#: sample must be exact squares, not rectangles"), 14 x 14 is 35 x 33, and 13 x 14 is
+#: 33 x 33, the first pair that is the same both ways and big enough to be the size of
+#: the office's own swatches.  :func:`swatch.square_units` is the rule.
+CELL_W = 13
+CELL_H = swatch.square_units(CELL_W)
+#: Clear air between two squares of the grid, in units: five pixels.  The office's own
+#: colour dropdown separates its swatches, and squares that touch read as one block of
+#: colour rather than as ten choices ("add a few px between colors in the menu, just
+#: like in the font color picker in native libreoffice").
+_CELL_GAP = 2
 
 _MARGIN = 8
 _HEADER_H = 16                     # the palette selector and the pager
@@ -78,10 +94,33 @@ _ROW_GAP = 5
 _BUTTON_W = 26
 _BUTTON_H = 18
 _BUTTON_GAP = 4
+#: The narrowest the palette selector ever is: what a list of short names gets, and
+#: the look the grid was laid out around.  It grows for a long one, see
+#: :func:`selector_width`.
 _COMBO_W = 54
 _PAGER_W = 10                      # one arrow of the pager
 _PAGER_MIN_W = 6                   # the indicator is never narrower than this
-_SWATCH_W = 14
+#: Clear air between an arrow and the page indicator, in dialog units.  Centring
+#: the indicator *in the space the arrows leave* is not the same as centring it
+#: with air around it: at the width the grid needs, the ``1/1`` box filled exactly
+#: the gap from one arrow to the other, which is the report "(1/1) is still too
+#: close to < and >".  :func:`content_width` reserves this much, so the window
+#: grows for it rather than the indicator being squeezed out of the middle.
+_PAGER_AIR = 6
+#: The chip under the grid, the colour being edited: the same 33 x 33 px square as one
+#: of the grid's own squares, so the two look like the same thing (13 x 14 units, see
+#: :data:`CELL_W` and :func:`swatch.square_units`).
+_SWATCH_W = CELL_W
+#: The chip's height: the same rule as its width, so it is the same 33 x 33 px square
+#: as one of the grid's squares above it.
+_SWATCH_H = swatch.square_units(_SWATCH_W)
+#: The field a hex value is typed into, in units - 73 px.  It used to borrow the
+#: button's width, 26 units and 48 px, where seven characters at the picker's font are
+#: 62 px of ink, so "#1F4E79" was painted cut in half ("the field that can be used to
+#: set the hex value of the color ... is a bit too narrow").
+#: ``dev/probe_picker_ink.py`` photographs the same characters in a reference
+#: ``FixedText``, where nothing can cut them, and in the field, and prints both.
+_HEX_W = 31
 #: How wide one glyph of the page indicator is, in dialog units: measured on the
 #: peer (a digit at the picker's 12 pt is ~7 px and a unit is 2.53 px, so 2.8).
 #: The indicator's box cannot be resized once its peer exists (fact 70) and a
@@ -89,11 +128,40 @@ _SWATCH_W = 14
 #: is made wide enough for the widest string the picker can answer with and put in
 #: the middle of the space between the arrows by arithmetic instead.
 _PAGE_CHAR_W = 2.8
+#: Clear air the page indicator's box keeps round its digits, in dialog units.  A
+#: ``FixedText`` has no ``TextAlign`` (fact 72) and no way to ask it for its text's
+#: width (fact 46), so the box is sized by arithmetic - and at the ``+ 1`` this used,
+#: ``dev/probe_picker_ink.py`` photographs "1/2" as 20 px of ink in a 23 px box: 2 px of
+#: air before the first digit and **1 px after the last**, which is the report "the text
+#: 2/2 of the corresponding page is slightly cut on the right (not enough padding?)".
+#: Four units is 10 px, which is 5 px of air on either side of a centred "1/2" and 6 px
+#: round "12/12", the widest string the picker can answer with.
+_PAGE_PAD = 4
+#: How wide one glyph of a palette's name is, in dialog units, at the same font.
+#: ``dev/probe_selector_fit.py`` photographs every name the chooser offers twice -
+#: in a ``FixedText``, where nothing can cut it, and in a dropdown at the width the
+#: picker asks for - and prints the ratio for each: "In this presentation" is 141 px
+#: of ink over 20 characters (2.79 units a glyph, it is mostly narrow letters),
+#: "Recently used" 102 px over 13 (3.10) and "freecolour-hlc" 105 over 14 (2.97).
+#: The widest ratio is the constant, or a name the probe has not photographed gets
+#: cut - which is exactly how the 2.8 this used to hold, taken from the one name
+#: somebody had looked at, left "In this presentation" cut in half.
+_LIST_CHAR_W = 3.1
+#: The selector's own furniture in the same units: the drop-down arrow and the
+#: padding round the words, so the name is not clipped by the box that names it.
+#: Measured, not guessed: the probe still finds the 20-character name cut at 74
+#: units and whole at 78, and its words are 56 of those units - so the arrow and its
+#: padding cost about 20, and two more are slack for a name nobody has photographed.
+_LIST_CHROME_W = 22
 
 _GRID_X = _MARGIN
-_GRID_W = COLUMNS * CELL_W         # 90 units, and the squares touch
+#: The grid's width: the squares plus the air between them, so the window is never
+#: narrower than what the grid needs (see :func:`content_width`).
+_GRID_W = COLUMNS * CELL_W + (COLUMNS - 1) * _CELL_GAP
 #: Where the first row of squares would start; each group's caption sits above it.
 _GRID_Y = _MARGIN + _HEADER_H + _HEADER_GAP
+#: The width the *grid* needs.  The window is this wide or wider: see
+#: :func:`content_width`, which is what the window is actually given.
 DIALOG_WIDTH = 2 * _MARGIN + _GRID_W
 
 #: The caption the remembered colours get, the way the office labels its groups.
@@ -101,6 +169,7 @@ RECENT_CAPTION = "Recently used"
 
 _MODEL_BUTTON = "com.sun.star.awt.UnoControlButtonModel"
 _MODEL_FIXED = "com.sun.star.awt.UnoControlFixedTextModel"
+_MODEL_IMAGE = "com.sun.star.awt.UnoControlImageControlModel"
 _MODEL_LISTBOX = "com.sun.star.awt.UnoControlListBoxModel"
 _MODEL_EDIT = "com.sun.star.awt.UnoControlEditModel"
 
@@ -117,19 +186,6 @@ def font_height():
     """The picker writes the same size as the menus and the settings dialog."""
     from plan_impress import dialog
     return dialog._FONT
-
-
-def border_line():
-    """``com.sun.star.awt.BorderStyle.LINE``: a solid line, not the theme's bevel.
-
-    The squares of the grid and the chip under it are labels with ``Border`` set
-    rather than buttons: a button paints the colour with the theme's raised bevel -
-    the "perspective-style border" that was reported - and has no border property
-    to switch it off with (fact 65), while a label paints it flat and draws a line
-    of one colour on all four sides (``dev/probe_swatch_look.py``, fact 77).
-    """
-    from plan_impress import dialog
-    return dialog.BORDER_LINE
 
 
 # --------------------------------------------------------------------------- #
@@ -235,22 +291,29 @@ def layout(bands, top=_GRID_Y):
         if cap:
             y += _CAPTION_GAP
         placed.append((caption, list(colours), y + cap, rows))
-        bottom = y + cap + rows * CELL_H
+        bottom = y + cap + rows * CELL_H + max(0, rows - 1) * _CELL_GAP
         y = bottom + _GROUP_GAP
     return placed, bottom
 
 
-def cell_position(index, bands_top=_GRID_Y, rows_before=0, caption_lines=0):
+def cell_position(index, bands_top=_GRID_Y, rows_before=0, caption_lines=0,
+                  x=_GRID_X):
     """``(x, y, width, height)`` of one cell of the grid, in dialog units.
 
     ``rows_before`` and ``caption_lines`` are what the rows and captions above it
-    have already used up - the squares touch each other, but a caption and its air
-    sit between two groups (see :func:`layout`).
+    have already used up - the squares are separated by :data:`_CELL_GAP` of clear
+    air, but a caption and its air sit between two groups as well (see :func:`layout`).
+    ``x`` is the grid's left edge, which follows the window's width (see
+    :func:`grid_x`).
+
+    The pitch is size plus air, which is what separates one colour from the next the
+    way the office's own dropdown separates its swatches; the squares themselves are
+    square in *pixels*, not in units (see :data:`CELL_W`).
     """
     row = index // COLUMNS
     column = index % COLUMNS
-    return (_GRID_X + column * CELL_W,
-            bands_top + caption_lines + (rows_before + row) * CELL_H,
+    return (x + column * (CELL_W + _CELL_GAP),
+            bands_top + caption_lines + (rows_before + row) * (CELL_H + _CELL_GAP),
             CELL_W, CELL_H)
 
 
@@ -286,7 +349,66 @@ def page_label(page, pages):
     return "%d/%d" % (page + 1, pages)
 
 
-def pager_geometry(pages, widest_pages=None, right=_GRID_X + _GRID_W):
+def selector_width(palette_names):
+    """How wide the palette selector has to be to say the longest name it offers.
+
+    ``palettes.deck_palette()`` calls the deck's own colours *In this presentation*,
+    20 characters, and at the width the grid alone needs the selector clipped it -
+    the report was that the chooser cuts the name.  A list box cannot be asked how
+    wide its words are (fact 46: no ``FontDescriptor`` on a peer, no text metrics
+    anywhere), so the width comes from ``dev/probe_selector_fit.py``, which
+    photographs the same words twice: in a ``FixedText`` that cannot be cut, and in a
+    dropdown at this width.  ``_LIST_CHAR_W`` is the widest pixels-per-glyph any name
+    measures and ``_LIST_CHROME_W`` what the arrow and the padding leave the words.
+
+    It is sized for **every** palette the picker offers, not for the one that happens
+    to be showing when the window opens, because the box cannot be resized once its
+    peer exists (fact 70) and switching to a longer name must not truncate it.
+    """
+    longest = max([len(str(name)) for name in palette_names] + [0])
+    return max(_COMBO_W, int(longest * _LIST_CHAR_W + 0.999) + _LIST_CHROME_W)
+
+
+def page_label_width(widest_pages=None):
+    """How wide the page indicator's box has to be for the widest string it says.
+
+    The same number :func:`pager_geometry` sizes the box with, asked for on its own:
+    it is also what the window's width has to reserve, or widening the window for a
+    long palette name takes the room away from the ``12/12`` in the middle.
+    """
+    widest = max(1, int(widest_pages or 1))
+    return max(_PAGER_MIN_W,
+               int(round(len(page_label(widest - 1, widest)) * _PAGE_CHAR_W))
+               + _PAGE_PAD)
+
+
+def content_width(palette_names=(), widest_pages=None):
+    """How wide the window has to be: what the grid needs, or the header row.
+
+    The squares are the fixed thing - ten columns of the office's own size - so the
+    window grows around them when the selector's words need the room, which is what
+    "put the dialog a bit wider so *In this presentation* is not cut" asked for.  The
+    header row is selector, gap, two arrows and the space between them: that sum, plus
+    the margins, is the narrowest window the selector fits in - and the space between
+    the arrows is what :func:`page_label_width` says the indicator needs, so growing
+    the window for a name cannot take the page number's room away.
+    """
+    room = (_MARGIN + selector_width(palette_names) + _BUTTON_GAP + 2 * _PAGER_W
+            + 2 * _PAGER_AIR + page_label_width(widest_pages) + _MARGIN)
+    return max(DIALOG_WIDTH, room)
+
+
+def grid_x(width=DIALOG_WIDTH):
+    """Where the grid starts in a window of ``width``: centred, never too close.
+
+    A window wider than the grid - the only reason it ever is, see
+    :func:`content_width` - would otherwise leave all the extra space on the right,
+    and the squares would look shoved into the left of their own popup.
+    """
+    return max(_MARGIN, (int(width) - _GRID_W) // 2)
+
+
+def pager_geometry(pages, widest_pages=None, right=_GRID_X + _GRID_W, left=None):
     """``(previous_x, label_x, label_w, next_x)`` - the arrows and the indicator.
 
     The indicator belongs *between* the arrows, which it used not to be: its box had
@@ -297,18 +419,27 @@ def pager_geometry(pages, widest_pages=None, right=_GRID_X + _GRID_W):
     centred in the space between the arrows by arithmetic, because a ``FixedText``
     has no ``TextAlign`` (fact 72).  A palette long enough to need ten pages takes
     the whole space, which is the most the arrows leave it.
+
+    ``right`` is where the row ends and ``left`` where the arrows begin: both follow
+    the selector's width, which follows the longest palette name (see
+    :func:`header_specs`), and the defaults are the grid's own edges.
     """
     next_x = right - _PAGER_W
-    previous_x = _GRID_X + _COMBO_W + _BUTTON_GAP
-    room = next_x - (previous_x + _PAGER_W)
+    previous_x = _GRID_X + _COMBO_W + _BUTTON_GAP if left is None else int(left)
+    # what the arrows leave is not what the indicator may fill: the air either side
+    # is what makes the page number read as a thing of its own rather than as part
+    # of an arrow (the report was "(1/1) is still too close to < and >").
+    first = previous_x + _PAGER_W + _PAGER_AIR
+    last = next_x - _PAGER_AIR
+    room = max(0, last - first)
     widest = max(1, int(widest_pages or pages))
-    label_w = int(round(len(page_label(widest - 1, widest)) * _PAGE_CHAR_W)) + 1
-    label_w = max(_PAGER_MIN_W, min(label_w, room))
-    label_x = previous_x + _PAGER_W + (room - label_w) // 2
+    label_w = max(_PAGER_MIN_W, min(page_label_width(widest), room))
+    label_x = first + (room - label_w) // 2
     return previous_x, label_x, label_w, next_x
 
 
-def header_specs(palette_names, pages, page, selected=0, widest_pages=None):
+def header_specs(palette_names, pages, page, selected=0, widest_pages=None,
+                 width=None):
     """The top row: which palette, and the pager.
 
     Paging because there is nothing to scroll in (fact 65) and ``freecolour-hlc``
@@ -318,15 +449,31 @@ def header_specs(palette_names, pages, page, selected=0, widest_pages=None):
     ``widest_pages`` is the longest page count any palette the picker offers has:
     the indicator's box is built once and for all (see :func:`pager_geometry`), so
     it has to fit ``12/12`` even when the palette that opens is ``standard``.
+    ``width`` is the window's, which the selector's words decide (see
+    :func:`content_width`); the row runs from the left margin to the right one, so a
+    window grown for a long name grows the selector and not the squares.
     """
     font = font_height()
     single = pages <= 1
-    previous_x, label_x, label_w, next_x = pager_geometry(pages, widest_pages)
+    width = content_width(palette_names, widest_pages) if width is None \
+        else int(width)
+    # The row belongs to the window, not to the grid: it runs margin to margin, so
+    # the selector gets what its longest name needs (see :func:`content_width`) and
+    # the ``>`` is flush with the right margin.  The squares are the thing that is
+    # centred (see :func:`grid_x`), because they are the popup's visual mass.
+    left = _MARGIN
+    right = width - _MARGIN
+    # what the longest name needs, but never so much that the indicator is squeezed
+    # out from between the arrows: the pager's room is the one thing not to trade
+    combo_w = min(selector_width(palette_names),
+                  right - left - (_BUTTON_GAP + 2 * _PAGER_W + _PAGER_MIN_W))
+    previous_x, label_x, label_w, next_x = pager_geometry(
+        pages, widest_pages, right=right, left=left + combo_w + _BUTTON_GAP)
     return [
         ("palettes", _MODEL_LISTBOX, [
             ("StringItemList", tuple(palette_names)),
-            ("Dropdown", True), ("PositionX", _GRID_X), ("PositionY", _MARGIN),
-            ("Width", _COMBO_W), ("Height", _HEADER_H), ("FontHeight", font),
+            ("Dropdown", True), ("PositionX", left), ("PositionY", _MARGIN),
+            ("Width", combo_w), ("Height", _HEADER_H), ("FontHeight", font),
             # the selection has to travel with the model (AGENTS.md fact 30)
             ("SelectedItems", (selected,)),
             ("HelpText", "Palette"),
@@ -354,7 +501,7 @@ def header_specs(palette_names, pages, page, selected=0, widest_pages=None):
     ]
 
 
-def caption_specs(bands):
+def caption_specs(bands, x=None):
     """The group captions at their **final** positions.
 
     Two labels, because there are at most two groups: the recent row and the
@@ -362,8 +509,11 @@ def caption_specs(bands):
     exists (measured: moving it by writing ``PositionY`` to the model afterwards
     changes the model and leaves the pixels where they were), so the position has
     to be right here; :meth:`ColourPicker._paint_cells` only changes the words.
+    ``x`` is the grid's left edge (see :func:`grid_x`): a caption belongs to the
+    squares it labels, not to the window.
     """
     font = font_height()
+    left = _GRID_X if x is None else int(x)
     placed, bottom = layout(bands)
     specs = []
     for index in range(2):
@@ -372,7 +522,7 @@ def caption_specs(bands):
         else:
             label, y = "", bottom           # switched off, position irrelevant
         specs.append(("caption%d" % index, _MODEL_FIXED, [
-            ("Label", label or ""), ("PositionX", _GRID_X), ("PositionY", y),
+            ("Label", label or ""), ("PositionX", left), ("PositionY", y),
             ("Width", _GRID_W), ("Height", _CAPTION_H), ("FontHeight", font),
         ]))
     return specs
@@ -390,7 +540,7 @@ def full_bands(recent, palette_name):
     return grid_bands(recent, palette_name, [None] * page_size(recent))
 
 
-def cell_specs(bands, current, entries=None):
+def cell_specs(bands, current, entries=None, x=None):
     """Every square of the grid as a flat colour with a solid line, at its position.
 
     All :data:`CELLS` of them always exist and are laid out for the *largest* grid
@@ -408,64 +558,70 @@ def cell_specs(bands, current, entries=None):
     a cell the palette does not fill says nothing when the pointer is on it, and
     :meth:`ColourPicker._paint_cells` switches it off.
 
-    Each square is a **label** with ``BackgroundColor`` and ``Border`` - not a
-    button.  A button is the obvious control to fill with a colour and to click, and
-    it is wrong twice over: the office paints its theme's raised bevel around it,
-    which is the "perspective-style border" that was reported, and the model has no
-    border property to switch it off with (fact 65).  A label paints the same colour
-    flat and draws a line of one colour on all four sides (``dev/probe_swatch_look.py``,
-    fact 77); it has no action source, so the click is ``mouseReleased``.
+    Each square is an **image control** carrying the colour inside a line of the
+    contrast colour (:func:`swatch_props`, :mod:`plan_impress.swatch`) - not a button,
+    which the office bevels, and not a coloured label, whose line can only ever be the
+    theme's own colour (fact 77, fact 78).  It has no action source either, so the click
+    is ``mouseReleased``.
+
+    ``x`` is the grid's left edge - :func:`grid_x`, which centres the squares in a
+    window the selector's words have made wider than the grid.
     """
+    left = _GRID_X if x is None else int(x)
     placed, bottom = layout(bands)
     specs = []
     flat = []
     for _caption, colours, y, rows in placed:
         for offset in range(rows * COLUMNS):
-            x, cell_y, width, height = cell_position(offset, bands_top=y)
+            cell_x, cell_y, width, height = cell_position(offset, bands_top=y,
+                                                          x=left)
             entry = colours[offset] if offset < len(colours) else None
-            flat.append((x, cell_y, width, height, entry))
+            flat.append((cell_x, cell_y, width, height, entry))
     for index in range(CELLS):
         if index < len(flat):
-            x, cell_y, width, height, entry = flat[index]
+            cell_x, cell_y, width, height, entry = flat[index]
         else:
             # parked below the grid, and switched off with the rest
-            x, cell_y, width, height, entry = _GRID_X, bottom, CELL_W, CELL_H, None
+            cell_x, cell_y, width, height, entry = left, bottom, CELL_W, CELL_H, None
         if entries is not None:
             entry = entries[index] if index < len(entries) else None
-        specs.append((cell_name(index), _MODEL_FIXED, [
-            ("Label", ""), ("PositionX", x), ("PositionY", cell_y),
-            ("Width", width), ("Height", height),
-            ("BackgroundColor", int(entry[1]) & 0xFFFFFF if entry else current),
-            ("Border", border_line()),
-            ("HelpText", entry[0] if entry else ""),
-        ]))
+        specs.append((cell_name(index), _MODEL_IMAGE,
+                      [("PositionX", cell_x), ("PositionY", cell_y),
+                       ("Width", width), ("Height", height),
+                       ("HelpText", entry[0] if entry else "")]
+                      + swatch.swatch_props(entry[1] if entry else current)))
     return specs
 
 
-def bottom_specs(bottom, current, hex_text=None):
+def bottom_specs(bottom, current, hex_text=None, x=None, width=None):
     """The read-out line and the button row, below the grid.
 
     One line says what the pointer is over - the swatch, the name and the value in
     an **editable** field, which is the office's ``Custom Color…`` in the space of
     six characters - and the row under it has the two buttons the typed value
     needs.
+
+    The read-out belongs to the grid, so the chip lines up with the first column
+    (``x``, see :func:`grid_x`); the buttons belong to the window and are flush with
+    its right margin, the way a dialog's are.
     """
     font = font_height()
+    left = _GRID_X if x is None else int(x)
+    right = (DIALOG_WIDTH if width is None else int(width)) - _MARGIN
     readout_y = bottom + _ROW_GAP
     button_y = readout_y + _ROW_H + _ROW_GAP
     return [
-        # the chip is a label with the same flat paint and solid line as a square of
-        # the grid: a button here would show the theme's bevel around the colour and
-        # would take the tab focus away from OK and Cancel for a control that does
-        # nothing when it is pressed.
-        ("preview", _MODEL_FIXED, [
-            ("Label", " "), ("PositionX", _GRID_X), ("PositionY", readout_y + 2),
-            ("Width", _SWATCH_W), ("Height", _ROW_H - 4),
-            ("BackgroundColor", current), ("Border", border_line()),
-        ]),
+        # the chip is the same kind of square as one of the grid, drawn the same way: a
+        # button here would show the theme's bevel around the colour and would take the
+        # tab focus away from OK and Cancel for a control that does nothing when it is
+        # pressed
+        ("preview", _MODEL_IMAGE,
+         [("PositionX", left),
+          ("PositionY", readout_y + (_ROW_H - _SWATCH_H) // 2),
+          ("Width", _SWATCH_W), ("Height", _SWATCH_H)] + swatch.swatch_props(current)),
         ("name", _MODEL_FIXED, [
             ("Label", readout("", current)),
-            ("PositionX", _GRID_X + _SWATCH_W + _BUTTON_GAP),
+            ("PositionX", left + _SWATCH_W + _BUTTON_GAP),
             ("PositionY", readout_y + 4),
             ("Width", _GRID_W - _SWATCH_W - _BUTTON_GAP), ("Height", _CAPTION_H),
             ("FontHeight", font),
@@ -478,24 +634,24 @@ def bottom_specs(bottom, current, hex_text=None):
         # nothing (``dev/probe_underline.py``, six variants: with and without the
         # absorber, before a button, and alone).
         ("hex-label", _MODEL_FIXED, [
-            ("Label", ""), ("PositionX", _GRID_X), ("PositionY", button_y - 4),
+            ("Label", ""), ("PositionX", left), ("PositionY", button_y - 4),
             ("Width", 4), ("Height", 3),
         ]),
         ("hex", _MODEL_EDIT, [
             ("Text", hex_text if hex_text is not None
              else config.color_to_hex(current)),
-            ("PositionX", _GRID_X), ("PositionY", button_y),
-            ("Width", _BUTTON_W), ("Height", _BUTTON_H), ("FontHeight", font),
+            ("PositionX", left), ("PositionY", button_y),
+            ("Width", _HEX_W), ("Height", _BUTTON_H), ("FontHeight", font),
             ("HelpText", "Type a colour and press Enter"),
         ]),
         ("ok", _MODEL_BUTTON, [
             ("Label", "OK"),
-            ("PositionX", DIALOG_WIDTH - _MARGIN - 2 * _BUTTON_W - _BUTTON_GAP),
+            ("PositionX", right - 2 * _BUTTON_W - _BUTTON_GAP),
             ("PositionY", button_y), ("Width", _BUTTON_W), ("Height", _BUTTON_H),
             ("FontHeight", font), ("DefaultButton", True),
         ]),
         ("cancel", _MODEL_BUTTON, [
-            ("Label", "Cancel"), ("PositionX", DIALOG_WIDTH - _MARGIN - _BUTTON_W),
+            ("Label", "Cancel"), ("PositionX", right - _BUTTON_W),
             ("PositionY", button_y), ("Width", _BUTTON_W), ("Height", _BUTTON_H),
             ("FontHeight", font), ("DefaultButton", False),
         ]),
@@ -508,7 +664,7 @@ def dialog_height(bottom):
 
 
 def _field_specs(palette_names, bands, pages, page, current, hex_text=None,
-                 selected=0, entries=None, widest_pages=None):
+                 selected=0, entries=None, widest_pages=None, width=None):
     """Every control of the picker, and the size of the window that holds them.
 
     ``(specs, (width, height))`` with ``specs`` as
@@ -524,13 +680,23 @@ def _field_specs(palette_names, bands, pages, page, current, hex_text=None,
     is given, is the page that is showing (see :func:`cell_specs`), and
     ``widest_pages`` the longest page count of any palette, which is what decides how
     wide the page indicator has to be (see :func:`pager_geometry`).
+
+    The width is the other thing decided here and once: :func:`content_width` asks
+    what the *longest palette name* needs, because the selector cannot be widened
+    afterwards (fact 70) and a name cut in half - "In this presentati..." - is what
+    the report was about.  The grid keeps its size and is centred (see
+    :func:`grid_x`); the header and the buttons follow the window's margins.
     """
     bottom = bottom_of(bands)
-    specs = (header_specs(palette_names, pages, page, selected, widest_pages)
-             + caption_specs(bands)
-             + cell_specs(bands, current, entries)
-             + bottom_specs(bottom, current, hex_text))
-    return specs, (DIALOG_WIDTH, dialog_height(bottom))
+    width = content_width(palette_names, widest_pages) if width is None \
+        else int(width)
+    left = grid_x(width)
+    specs = (header_specs(palette_names, pages, page, selected, widest_pages,
+                          width=width)
+             + caption_specs(bands, x=left)
+             + cell_specs(bands, current, entries, x=left)
+             + bottom_specs(bottom, current, hex_text, x=left, width=width))
+    return specs, (width, dialog_height(bottom))
 
 
 def bottom_of(bands):
@@ -568,6 +734,11 @@ class ColourPicker(object):
         self.model = None
         self._listeners = []
         self._warnings = []
+        #: Whether the office's theme is dark, which decides the colour of the line
+        #: round every swatch (:func:`plan_impress.swatch.ring_colour`).  ``None``
+        #: means nothing said, and then each square is lined against its own colour.
+        self.dark = swatch.theme_is_dark(ctx)
+        self._pixels = None
 
     # -- what is showing --------------------------------------------------- #
 
@@ -675,6 +846,61 @@ class ColourPicker(object):
 
     # -- behaviour --------------------------------------------------------- #
 
+    def _pixels_of(self, name, units_w, units_h):
+        """The pixel size ``name`` is painted at, or the size its units say.
+
+        The line is one pixel *of the bitmap*, so the bitmap wants the control's own
+        size: a dialog unit is 2.53 x 2.39 px at the usual screen (AGENTS.md facts 28
+        and 64), which is what :func:`plan_impress.swatch.bitmap_size` turns a rectangle
+        into and the only answer available before a peer exists.  Afterwards the peer is
+        asked, because on another screen that is the only number that is not a guess -
+        and ``ScaleMode`` 2 stretches whatever it is given over the control, so being
+        wrong costs a thicker line and never an empty square.
+        """
+        size = swatch.bitmap_size(units_w, units_h)
+        control = self.control(name) if self.dialog is not None else None
+        try:
+            rect = control.getPeer().getPosSize()
+            if rect.Width > 1 and rect.Height > 1:
+                size = (int(rect.Width), int(rect.Height))
+        except Exception:
+            pass
+        return size
+
+    def _bitmap_size(self):
+        """The pixel size a square of the grid is painted at, remembered."""
+        if self._pixels is None:
+            self._pixels = self._pixels_of(cell_name(0), CELL_W, CELL_H)
+        return self._pixels
+
+    def _set_graphic(self, control_model, colour, size=None):
+        """Hand a swatch the bitmap it is drawn from: its colour, its contrast line.
+
+        ``Graphic`` rather than ``ImageURL``, because nothing may be written to a user's
+        disk: the bytes reach the graphic provider through a ``Pipe``, in the signed
+        spelling of ``sequence<octet>`` - the unsigned one is refused there, which is the
+        one thing about this route that is not obvious (``dev/probe_swatch_stream.py``).
+        It is also a property a control takes *after* its peer exists, which is what a
+        palette switch is (``dev/probe_swatch_ring.py`` photographs the change).
+
+        ``size`` is the bitmap's pixel size: the control's own, which for a square of
+        the grid is :meth:`_bitmap_size` and for the chip under it something else
+        entirely - one size for both would make the chip's line a pixel and a half thick.
+        ``False`` when no bitmap can be made: the control keeps its plain
+        ``BackgroundColor``, the flat square this widget had before the line was drawn,
+        and a chooser that cannot draw a line must still be a chooser.
+        """
+        width, height = size or self._bitmap_size()
+        made = swatch.graphic(self.ctx, colour, width, height,
+                              swatch.ring_colour(colour, self.dark))
+        if made is None:
+            return False
+        try:
+            control_model.setPropertyValue("Graphic", made)
+        except Exception:
+            return False
+        return True
+
     def _paint_cells(self):
         """Re-point every caption, square, pager label and hex field at the page.
 
@@ -699,7 +925,9 @@ class ColourPicker(object):
             colour_name, colour = entry
             control_model = self.model.getByName(name)
             control_model.setPropertyValue("BackgroundColor", int(colour) & 0xFFFFFF)
+            control_model.setPropertyValue("Tag", config.color_to_hex(colour))
             control_model.setPropertyValue("HelpText", colour_name)
+            self._set_graphic(control_model, colour)
             _show(control)
         for index, control_name in enumerate(("caption0", "caption1")):
             try:
@@ -764,6 +992,22 @@ class ColourPicker(object):
             except Exception:
                 continue
 
+    def _paint_preview(self):
+        """The chip under the grid, lined like a square of the grid above it.
+
+        It needs saying at build time as well as on hover: the specs describe the
+        control and ``_show_colour`` repaints it when the pointer moves, so before the
+        fix it opened as a flat rectangle with no line at all - which is exactly the
+        report about the palette, in the one place nobody hovered.
+        """
+        try:
+            preview = self.model.getByName("preview")
+        except Exception:
+            return
+        if preview is not None:
+            self._set_graphic(preview, self.current,
+                              self._pixels_of("preview", _SWATCH_W, _SWATCH_H))
+
     def _show_colour(self, colour, name=""):
         """Paint the read-out: the swatch, the name, the value in the field.
 
@@ -774,6 +1018,7 @@ class ColourPicker(object):
         self.current = int(colour) & 0xFFFFFF
         for control_name, property_name, value in (
                 ("preview", "BackgroundColor", self.current),
+                ("preview", "Tag", config.color_to_hex(self.current)),
                 ("name", "Label", readout(name, self.current)),
                 ("hex", "Text", config.color_to_hex(self.current))):
             try:
@@ -781,6 +1026,9 @@ class ColourPicker(object):
                                                                     value)
             except Exception:
                 pass
+        # the chip's line is drawn too, and with it: it names the colour the pointer is
+        # over, so a stale line is a wrong read-out
+        self._paint_preview()
         self._refresh("preview", "name", "hex")
 
     def _choose_palette(self, index):
@@ -952,6 +1200,10 @@ class ColourPicker(object):
             config.log(self.ctx, "picker warnings: %s" % self._warnings)
         self._peer()
         self._install_listeners()
+        # the chip is a drawn square like the grid's, so it wants its bitmap before the
+        # page is painted: _paint_cells() ends by invalidating the window and every
+        # control in it, which is what makes the new bitmap reach the screen
+        self._paint_preview()
         # only now, because hiding a control means talking to its peer: before the
         # fix a 5-colour palette left 55 squares painted in the colour being
         # edited, so they looked pickable and picked something else

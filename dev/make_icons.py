@@ -83,11 +83,44 @@ def settings_icon(size):
     return image
 
 
+def _section_label(draw, box, size):
+    """One short accent bar near the top left: the section name above the content."""
+    left = box[0] + max(2, (box[2] - box[0]) // 6)
+    top = box[1] + max(1, (box[3] - box[1]) // 8)
+    draw.line([(left, top), (left + (box[2] - box[0]) // 2, top)],
+              fill=ACCENT, width=max(2, size // 8))
+
+
+def section_icon(size):
+    """The slide of a section: its name drawn above the (dimmed) content."""
+    image, draw = _canvas(size)
+    box = _slide(draw, size)
+    _section_label(draw, box, size)
+    _lines(draw, box, -1, size)
+    return image
+
+
+def section_remove_icon(size):
+    """``section_icon`` with the red cross of *Remove Plan Slides* over it."""
+    image, draw = _canvas(size)
+    box = _slide(draw, size)
+    _section_label(draw, box, size)
+    _lines(draw, box, -1, size)
+    pad = max(2, size // 5)
+    draw.line([(pad, pad), (size - pad - 1, size - pad - 1)], fill=(200, 40, 40, 255),
+              width=max(2, size // 8))
+    draw.line([(size - pad - 1, pad), (pad, size - pad - 1)],
+              fill=(200, 40, 40, 255), width=max(2, size // 8))
+    return image
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
     for size in (16, 26):
         for name, factory in (("plan", plan_icon), ("overview", overview_icon),
-                              ("remove", remove_icon), ("settings", settings_icon)):
+                              ("remove", remove_icon), ("settings", settings_icon),
+                              ("section", section_icon),
+                              ("section_remove", section_remove_icon)):
             path = os.path.join(OUT, "%s_%d.png" % (name, size))
             factory(size).save(path)
             print("wrote", path)

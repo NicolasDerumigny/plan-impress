@@ -90,6 +90,58 @@ def describe(p):
             % (name, label[:16], shown, rect, background))
 
 
+def swatch_pixels(p, image, title):
+    """What the squares are actually painted with, from the screen.
+
+    No property says what a peer rendered (fact 46), and ``BackgroundColor`` is only the
+    colour *under* the bitmap, so the line is checked where it exists: the crop of each
+    square, how much of it is the colour, how much is the contrast line, and whether
+    that line closes on all four sides.  ``dev/probe_swatch_ring.py`` established the
+    recipe; this applies it to the real chooser with the office's real palettes.
+    """
+    import subprocess
+    import numpy
+    from plan_impress import swatch
+    try:
+        found = subprocess.run(["xdotool", "search", "--name", title],
+                               capture_output=True, text=True, timeout=10).stdout
+        win = found.split()[0]
+        shell = subprocess.run(["xdotool", "getwindowgeometry", "--shell", win],
+                               capture_output=True, text=True, timeout=10).stdout
+        values = dict(line.split("=", 1) for line in shell.splitlines() if "=" in line)
+        origin = (int(values["X"]), int(values["Y"]))
+    except Exception as error:
+        log("swatch pixels: no window (%s)" % error)
+        return
+    log("window %s at %s" % (title, origin))
+    print("window %s at %s" % (title, origin))
+    names = ["cell%d" % index for index in range(3)] + ["preview"]
+    for name in names:
+        try:
+            model = p.model.getByName(name)
+            rect = p.control(name).getPeer().getPosSize()
+            colour = int(model.BackgroundColor) & 0xFFFFFF
+        except Exception:
+            continue
+        box = (origin[0] + rect.X, origin[1] + rect.Y,
+               origin[0] + rect.X + rect.Width, origin[1] + rect.Y + rect.Height)
+        crop = numpy.asarray(image.crop(box)).astype(numpy.int16)
+        wanted = {"colour": colour,
+                  "line": swatch.ring_colour(colour, p.dark)}
+        print("   %-8s %-12s peer %2dx%2d px, drawn at %s"
+              % (name, "#%06X" % colour, rect.Width, rect.Height,
+                 "its own size" if (colour, rect.Width, rect.Height,
+                                    swatch.ring_colour(colour, p.dark),
+                                    swatch.RING_WIDTH) in swatch._GRAPHICS
+                 else "NOT its own size"))
+        for label, value in wanted.items():
+            target = numpy.array([(value >> 16) & 255, (value >> 8) & 255,
+                                  value & 255], dtype=numpy.int16)
+            hits = int((numpy.abs(crop - target).max(axis=2) <= 24).sum())
+            print("      %-6s #%06X %4d px of %d" % (label, value, hits,
+                                                     crop.shape[0] * crop.shape[1]))
+
+
 def main():
     if not os.path.isdir(SHOT):
         os.makedirs(SHOT)
@@ -111,6 +163,9 @@ def main():
            len(p.recent)))
     describe(p)
     shoot("look-1-open.png")
+    from PIL import Image
+    swatch_pixels(p, Image.open(os.path.join(SHOT, "look-1-open.png")).convert("RGB"),
+                  "Heading colour")
     # the twelfth square: 0..2 are the recent colours, 3..9 are the pad of that row
     # (hovering the pad changes nothing, which is worth seeing too), so 11 is the
     # second colour of the palette page

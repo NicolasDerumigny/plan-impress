@@ -200,6 +200,20 @@ class PlanJob(unohelper.Base, XJobExecutor):
         removed = core.remove_plan(doc)
         _log(self.ctx, "remove_plan -> %d slides" % removed)
 
+    def do_section_titles(self):
+        """Write each slide's section name into a box on that slide."""
+        from plan_impress import config, core
+        doc = _active_presentation(self.ctx)
+        settings = config.load(self.ctx)
+        report = core.apply_section_titles(doc, settings, self.ctx)
+        _log(self.ctx, "apply_section_titles -> %s" % report)
+
+    def do_remove_section_titles(self):
+        from plan_impress import core
+        doc = _active_presentation(self.ctx)
+        removed = core.remove_section_titles(doc)
+        _log(self.ctx, "remove_section_titles -> %d boxes" % removed)
+
     def do_settings(self):
         from plan_impress import config, dialog
         doc = None
@@ -242,6 +256,14 @@ class RemovePlan(PlanJob):
     command = "remove"
 
 
+class SectionTitles(PlanJob):
+    command = "section_titles"
+
+
+class RemoveSectionTitles(PlanJob):
+    command = "remove_section_titles"
+
+
 class Settings(PlanJob):
     command = "settings"
 
@@ -257,6 +279,10 @@ if not _REGISTRATION_ONLY:
         InsertPlan, "org.devsys.planimpress.InsertPlan", _JOB)
     _HELPER.addImplementation(
         RemovePlan, "org.devsys.planimpress.RemovePlan", _JOB)
+    _HELPER.addImplementation(
+        SectionTitles, "org.devsys.planimpress.SectionTitles", _JOB)
+    _HELPER.addImplementation(
+        RemoveSectionTitles, "org.devsys.planimpress.RemoveSectionTitles", _JOB)
     _HELPER.addImplementation(
         Settings, "org.devsys.planimpress.Settings", _JOB)
     _HELPER.addImplementation(

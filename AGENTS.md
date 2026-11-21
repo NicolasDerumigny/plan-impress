@@ -682,31 +682,43 @@ Every one of them was measured rather than guessed (`dev/probe_swatch_look.py`,
 `dev/probe_picker_peers.py`, `dev/probe_underline.py`), because all four are about
 pixels no property assertion can see.
 
-77. **A colour is painted on a *label* with `Border` set, never on a button.** The
-   "perspective-style border" is the theme's **button bevel**: `dev/probe_swatch_look.py`
-   photographs one candidate per row and finds a button's colour ringed by `#000E39`
-   above and to the left and `#5F8EB9` below and to the right — dark on one pair of
-   sides, light on the other, which is a raised edge and is what the eye calls
-   perspective. A button model has no `Border` to switch it off with (fact 65).
-   `UnoControlFixedTextModel` paints the same `BackgroundColor` **flat** and, with
-   `Border = BorderStyle.LINE` (`dialog.BORDER_LINE`, 2), one row of a single colour
-   all round. So the palette's sixty squares, the chip under them and the swatch
-   beside each hex field in the settings dialog are all labels with `Border` —
-   `picker.cell_specs`, `picker.bottom_specs`, `dialog._field_specs`.
-78. **`BorderColor` is accepted and ignored.** The same probe asks for a red ring
-   (`0xFF0000`) on a label and on an image control and photographs `#2B2E39` — the
-   theme's own line colour — in both cases, identical to what an unset border colour
-   paints. Setting it is harmless but achieves nothing: a colour is outlined in the
-   theme's colour and there is nothing to be done about it from Python, so do not
-   spend time on it or write a test that expects the requested colour.
-79. **A label has no action source, so a click on a colour is `mouseReleased`.**
+77. **A colour is *drawn*, on an image control — never on a button, never on a coloured
+   label.** The "perspective-style border" is the theme's **button bevel**:
+   `dev/probe_swatch_look.py` photographs one candidate per row and finds a button's
+   colour ringed by `#000E39` above and to the left and `#5F8EB9` below and to the right
+   — dark on one pair of sides, light on the other, which is a raised edge and is what
+   the eye calls perspective. A button model has no `Border` to switch it off with
+   (fact 65). A label is the next guess — it paints `BackgroundColor` flat and does take
+   a `Border` — and it fails the *second* report ("look how the default palette colors
+   are drawn, with a thin white border on a dark theme, and think dark border and a
+   white theme"), because its line can only be the theme's own (fact 78) and a black
+   square therefore had no edge at all. What is painted is an
+   `UnoControlImageControlModel` carrying a PNG written here (fact 82): the sixty squares
+   of the grid, the chip under them and both swatches beside the hex fields all get their
+   properties from one place, `picker.swatch_props` — `Border` 0 (the line is in the
+   picture), `ScaleMode` fill, `Tabstop` False, `Tag` the hex value, and
+   `BackgroundColor` still the colour, which is what shows if no bitmap can be made.
+78. **`BorderColor` is accepted and ignored, in every `BorderStyle` there is.**
+   `dev/probe_border_colour.py` puts twelve swatches on the screen — each `Border` value
+   from 0 to 6, with and without `BorderColor = 0xFF0000` — and photographs them:
+   `Border` 0 paints no ring at all (the dialog's own `#383C4A` shows through) and 1
+   through 6 all paint the same `#2B2E39`, the theme's line colour, with **0 of 180**
+   ring pixels red. Asking for a border colour is harmless and achieves nothing, so do
+   not spend time on it or write a test that expects the colour that was asked for: the
+   line has to be drawn (fact 82).
+79. **A colour control has no action source, so a click on a colour is `mouseReleased`.**
    `addActionListener` on the control of a `UnoControlFixedTextModel` or an
    `UnoControlImageControlModel` raises `AttributeError` (probe: eight times, once per
-   candidate); only a button fires `actionPerformed`. `picker`'s `Cell` listener and
-   `dialog`'s `Swatch` listener therefore take the click from `mouseReleased` and the
-   hover from `mouseEntered`, both wrapped because of fact 66. The cost is that a
-   square cannot take the tab focus, so the grid is not keyboard-navigable and the hex
-   field beside OK is the keyboard route to a colour.
+   candidate); only a button fires `actionPerformed`. Both *do* deliver `mouseReleased`
+   and `mouseEntered` — `dev/probe_swatch_ring.py` drives them with `xdotool` at the
+   window's real screen position (the window's own peer answers `0,0`, fact 76, so a
+   pointer coordinate taken from a child's `getPosSize()` is only right once the window's
+   own position is added: an earlier probe moved the pointer to the top-left of the
+   *screen* and concluded wrongly that an image control answers nothing). `picker`'s
+   `Cell` listener and `dialog`'s `Swatch` listener therefore take the click from
+   `mouseReleased` and the hover from `mouseEntered`, both wrapped because of fact 66,
+   and the image control is given `Tabstop = False` so a swatch cannot be tabbed to and
+   the hex field beside OK stays the keyboard route to a colour.
 80. **The palette's name is said once, by the selector above the grid.** `grid_bands()`
    returns `(None, colours)` for the palette page: a caption repeating what the
    dropdown already shows is the duplicate title that was reported, and `_paint_cells()`
@@ -729,6 +741,178 @@ pixels no property assertion can see.
    underlines its first letter, and there is no property to say otherwise (fact 72).
    `bottom_specs()` therefore inserts the invisible `hex-label` before `hex`; without
    it "#1F4E79" looked like a broken glyph.
+82. **The picture is drawn here and handed over as a `Graphic`.** `UnoControlImageControlModel`
+   has `Graphic`/`DefaultGraphic` (an `awt.XGraphic`, `None` by default), `ImageURL`,
+   `ScaleMode` and `ScaleImage` — and **no** `ImagePosition`, `ImageData` or `ImageScale`
+   (`dev/probe_swatch_bitmap.py` prints what setting each one does: nothing). `ScaleMode`
+   is `0` natural size, `1` proportional, **`2` fill** (`ImageScale` is then ignored) and
+   `3`/`4` paint nothing; `swatch.bitmap_size()` is `4x3`, which a fill stretches to any
+   rectangle without resampling a single pixel of the ring. The PNG itself is written by
+   `swatch.png_bytes()` out of `zlib` and `struct` — LibreOffice ships no image library —
+   and reaches `GraphicProvider.queryGraphic()` through a `com.sun.star.io.Pipe` whose
+   `writeBytes()` wants a **signed** `sequence<octet>` (`x < 128: x else x - 256`; the
+   unsigned bytes `bytes`/`bytearray` are marshalled as a `[]string` and the call fails),
+   with `closeInput()` before asking. No temporary file: an extension writing to disk to
+   paint a square is what the user would rightly object to. `swatch.graphic()` caches by
+   `(colour, size)`, `SwatchListener`/`Cell` set `Graphic` on the *control model* after
+   `createPeer` — which, unlike geometry (fact 70), does repaint.
+83. **The office will not say whether the theme is dark, so the desktop is asked.**
+   `Theme::getSettings()` and `XStyleFacility` are absent from `offapi.rdb`; the two
+   configuration spellings that look right, `/org.openoffice.Office.Common/Theme` and
+   `/VCL/Properties`, raise `UnknownPropertyException`, and `/org.openoffice.Office.Common/Appearance`
+   answers `FontAntiPlacement=0 ThemeTone=0` on a clearly dark office — a default, not an
+   answer (`dev/probe_theme.py`; `ConfigurationUpdate` cannot be opened at all, and there is
+   no theme enum in the type repository). So `swatch.theme_is_dark()` reads what the desktop
+   itself configures: `~/.config/gtk-3.0/settings.ini` (`gtk-application-prefer-dark-theme`,
+   a `gtk-theme-name` ending in `-Dark`, or `Arc-Dark`), `~/.gtkrc-2.0`, `~/.config/kdeglobals`
+   (`[KDE-Gen] Theme=…-dark`) and `GTK_THEME`, with `PLAN_IMPRESS_THEME=dark|light` as the
+   override the `dev/` probes use. Nothing to read means `None`, and then **each swatch gets
+   the ring that contrasts with its own colour** (`ring_colour`: `#F2F2F2` under a luminance
+   below 0.55, `#4D4D4D` above — the luminance is the sRGB one, `/12.92` below the 0.03928
+   knee and `((c+0.055)/1.055)^2.4` above it), which is the behaviour on any Linux desktop
+   whose settings this code cannot parse and the only one that can never paint a black
+   square with no edge on a black dialog.
+84. **The chooser is as wide as the longest palette name it has to show, measured in
+   pixels.** `picker` measures its dropdown rather than guessing: `selector_width()` is
+   the widest entry at `_LIST_CHAR_W` units a glyph plus `_LIST_CHROME_W` of the
+   `Popup` control's own frame and arrow — **3.1** and **22**, from
+   `dev/probe_selector_fit.py`, which photographs every name twice: in a `FixedText`,
+   where nothing can cut it, and in a dropdown at the width in question ("In this
+   presentation" is still cut at 74 units and whole at 78). The trap is measuring one
+   name: the same probe finds 2.79 units a glyph for "In this presentation" (mostly
+   narrow letters) and **3.10** for "Recently used", and the constant was 2.8, taken
+   from the first alone, which is what cut the second. `content_width()` takes the
+   grid's width and the header row's — selector, gap, two arrows and `_PAGER_AIR` (6
+   units) of clear air on each side of the page indicator, reserved *there* as well as
+   in `pager_geometry()`, or a window widened for a name just moves the crowding into
+   the indicator ("(1/1) is still too close to < and >") — `grid_x()` centres the
+   squares in what is left, and `page_label_width()` reserves the widest page count
+   `all_pages()` can answer with. All of it is computed **before** `createPeer`,
+   because geometry does not move afterwards (fact 70) — the tests over it are
+   `the_chooser_is_wide_enough_for_the_names_it_shows` and
+   `picker_paints_nothing_on_top_of_anything_else`.
+
+85. **A colour is square in *pixels*, and a dialog unit is not square: 2.53 x 2.39.** A
+   control that is `n x n` units is a rectangle on the screen — the 9 x 7 units a square
+   of the grid used to be photographs as 23 x 17 px, and the swatch beside a hex field in
+   the settings dialog was 22 x 12, a strip ("the color sample must be exact squares, not
+   rectangles"). `swatch.square_units(width)` is the rule and every colour carrier is
+   sized with it: `picker.CELL_W`/`CELL_H`, `picker._SWATCH_W`/`_SWATCH_H` and
+   `dialog._SWATCH_W`/`_SWATCH_H` all paint 33 x 33 px (13 x 14 units). The candidates
+   are photographed, not calculated, by `dev/probe_picker_ink.py`: 9x7 → 23x17, 11x12 →
+   28x29, 13x14 → 33x33, 14x14 → 35x33, 16x17 → 40x40. Two more reports are answered by
+   the same screenshot: touching squares read as one block of colour rather than as ten
+   choices, so the grid separates them by `_CELL_GAP` (2 units ≈ 5 px, and 7 px is what
+   is clear between one colour's block and the next) the way the office's own
+   font-colour dropdown separates its swatches; and the field a colour is typed into
+   needed `_HEX_W`, having borrowed the button's 26 units until the probe painted
+   "#1F4E79" into fields of four widths and watched the ink grow 49, 54, 62, 64 px and
+   stop there — seven characters, because `config.hex_to_color` accepts the leading `#`
+   a user types ("the field ... is a bit too narrow"). The probe anchors the client area
+   on a square painted `#7FFF00`, because the window's peer answers `0,0` (fact 76) and
+   the desktop here is the same grey as the dialog. The tests are
+   `a_colour_is_a_square_of_pixels_and_never_a_strip`,
+   `the_grid_leaves_clear_air_between_its_squares`,
+   `colour_squares_are_square_and_apart_on_the_screen` (the peers, not the specs) and
+   `the_hex_field_is_wide_enough_for_the_value_it_shows`.
+
+### The section-name box (*Section Titles*)
+
+`core.apply_section_titles` writes each slide's section name into a plain text box on
+that slide; `core.remove_section_titles` takes the boxes away again. The eight things
+below are why the code is shaped as it is.
+
+86. **A box is recognised by its name's *prefix*, never by the whole name.** Duplicating
+    a slide copies every shape it had, **name included**, and LibreOffice only appends a
+    counter: the box `PlanImpress:SectionText:Slide:1` comes back as
+    `PlanImpress:SectionText:Slide: 1` (the space is the office's, `dev/debug_section_titles.py`
+    prints it). Matching the exact name is therefore the report "the section header is
+    not detected when a slide is duplicated": the copy is not seen, and a second box is
+    painted over it. The position in the name is decoration for logs and macros, and is
+    rewritten on every run so a slide that moved says and names the section it is in
+    *now*. `SECTION_TEXT_PREFIX` is the one thing `_is_section_box` compares.
+87. **The label is a running head *above* the heading the slide already has.** Placing it
+    between the heading and the content measured as `pdftotext -bbox` 56.4–92.1 pt against
+    a heading at 64.7–113.8 pt — the bands overlap by 27 pt and the two print through each
+    other; only the fixture's *centred* heading had kept that invisible. So
+    `_section_box_rect` asks `_heading_top` (the counterpart of `_heading_bottom`, and the
+    same reason: a presentation placeholder paints its line in the *middle* of its box,
+    fact 56) and sits above the painted line, falling back to below it when there is no
+    room. The witness is `section_titles_do_not_print_through_the_heading`, which renames
+    the sections `Section1`, `Section2`, … first: a deck whose heading contains its section
+    name ("Live Demo" in a section called "Demo") otherwise has the heading's own word
+    counted as the label.
+88. **A text box from `createInstance` arrives filled and framed.** Measured on a freshly
+    loaded deck: `FillStyle` and `LineStyle` answer `SOLID`, so a label that is not
+    explicitly flattened is drawn on a grey rectangle with a line round it; both are set
+    to `0` (`NONE` — the office answers these enums by *name*, fact 92). Impress is known
+    to hand a new shape the attributes of the last shape created, but that could not be
+    *set* from UNO in either direction — created shapes answered `SOLID` on one run and
+    `NONE` on the next in one office, whichever it had been doing — so the flattening is
+    not left to the default: `_draw_flat()` runs at creation **and** on every paint, so a
+    box that picked a plate up (a duplicated slide, a template, an edit) is flat again
+    after the next *Section Titles*. The witness is
+    `section_titles_are_painted_without_a_plate`, which gives a box a solid fill and
+    frame, re-runs the command and asks again — the creation-time assertion beside it is a
+    bar, not a witness, for exactly that reason. A plain `com.sun.star.drawing.TextShape`
+    is *not* a content placeholder — `CONTENT_SERVICES` is `OutlinerShape`/
+    `SubtitleTextShape` only — and that is also what keeps a generated box out of the
+    `_deck_placeholder` vote that decides what the deck looks like (fact 54); otherwise
+    the second run would take its own label as the template.
+89. **The look goes on the shape *before* `setString` and on its paragraphs after.** The
+    paragraph `setString` creates inherits from the shape, and a paragraph of a text shape
+    may take its characters from the page style instead (fact 52). Measured once, on the
+    neighbour of a slide that had just been duplicated, the paragraph enumeration answered
+    *nothing at all* — so `_paint_section_box` asks the shape again after the text is in.
+90. **The office's font list lives on a window peer, and asking from a second top-level
+    window while a menu popup is up wedges the client.** `Toolkit` has no
+    `getDeviceFontEnumeration`, a frame's container window has no `getPeer` at all
+    (`AttributeError`) and `peer.createDevice()` offers no font enumeration either —
+    `dev/probe_fonts.py` prints every route with what it answers. A peer of an
+    `UnoControlDialog` answers `getFontDescriptors()` with **4701 descriptors = 2835
+    families** (one per face, so the names have to be deduplicated). Building such a peer
+    *before* the settings dialog had its own hung the client outright, although
+    `dev/probe_font_peer.py` runs the same five lines with and without a document open in
+    under a second: the second top-level window next to the menu's popup grab is what
+    hangs. `SettingsDialog._fill_fonts` therefore reads the list from the dialog's **own**
+    peer after `createPeer` and writes `StringItemList` then — words and colours still
+    change after `createPeer` even though geometry does not (fact 70), measured as
+    itemCount 0 → 3 with the typed value intact in `dev/probe_font_items.py`. An empty
+    list is a normal outcome, not an error: the field is an editable combo either way.
+91. **The dialog's peer position is not where the dialog paints.** `getPosSize()` answered
+    `482x629 at 476,0` while the marker colour proved the client area is at **474,25** —
+    the office reports the *frame*, so a crop taken straight from peer coordinates lands
+    ~25 px high and every new label read "nothing painted". `xwininfo` answers the frame
+    too (fact 76), so `dev/probe_section_fields.py` measures the offset the way
+    `dev/probe_picker_ink.py` does, by painting the dialog `#7FFF00`. And a peer is not
+    told when its model changes (fact 75): the plain screenshot has to be taken *before*
+    the marker one, or the transparent controls keep the green behind them and every row
+    of their box reads as ink.
+92. **Two pyuno spellings, each worth one failed test.** `FillStyle` and `LineStyle` come
+    back as an `Enum` whose `.value` is the **name** — `'NONE'`, so `int(…)` raises
+    `ValueError` (`_style_is_none` accepts both spellings). And a `DrawPage` has `Width`
+    and `Height` but **no `Size`** — only the shapes on it have `Size`.
+93. **The position fields speak centimetres and the settings file does not.** Impress's
+    own *Position and Size* dialog works in cm, which is what a user reads off it, while
+    every geometry property in `core` is 1/100 mm (fact 20); `dialog.cm_to_units` and
+    `units_to_cm` are the one line that joins them. Empty, rubbish and a negative number
+    all mean the same thing — "where the deck's own content box is", `None` — because a
+    half-typed value must not move the label to 0,0. `config.load` is the only guard
+    against a hand-edited file, which is why `"1.5"`, `True`, `-4` and `-2.5` are each
+    refused there (`_as_length`, `_as_point`).
+
+### Driving the office with `xdotool`
+
+94. **A menu click left open wedges the office for every later client.** `xdotool
+    mousemove X Y click 1` on the *Plan* menu takes a pointer grab, and the grab survives
+    the probe that asked for it — killing such a probe half way through leaves the popup
+    open and the office then answers nothing more that touches a document: the next script
+    hangs in `loadComponentFromURL()` without printing a line while `pgrep`, `xdpyinfo`,
+    the UNO port and `Toolkit.getFontDescriptors()` all still look healthy. It is fact 48's
+    modal dialog in X clothing and fact 60's dead office without a dead process, so the
+    two probes that click the menu (`dev/measure_text.py`, `dev/probe_font_menu.py`) end
+    with `key Escape`, `key Escape` and a click on the canvas; when a hang is already
+    there, restart the **office** — restarting the script changes nothing.
 
 ## Testing notes
 
@@ -780,10 +964,27 @@ once rather than repeated under the selector, a caption above each group that do
 not overlap its squares or hide behind the selector, a page indicator centred between
 the arrows and sized for the widest page count any palette has, the colour's name and
 value under the grid with a field to type one into, one OK that Enter answers and one
-Cancel flush with the grid. `colours_are_painted_flat_with_a_solid_line` is the
-"perspective-style border" report: every square of the grid, the chip under it and
-both swatches of the settings dialog are labels with `Border` =
-`BorderStyle.LINE` (fact 77), while the two real buttons stay buttons.
+Cancel flush with the grid, and `the_chooser_is_wide_enough_for_the_names_it_shows`
+says no entry the dropdown can list is cut (fact 84). The "perspective-style border"
+report is pinned by `colours_are_painted_flat_with_a_contrast_line`: the only controls
+left that are buttons are the two real buttons, and every colour carrier is an image
+control with `Border` 0, because the line is in the picture (fact 77). The picture is
+checked as pixels, not as properties — `a_swatch_is_its_colour_inside_a_line_of_the_contrast_colour`
+decodes the PNG `swatch.png_bytes()` writes back to a raster and asserts the inside is
+the colour and the ring the contrast colour, `the_line_round_a_colour_contrasts_with_what_it_sits_on`
+asserts black and white never get the same line, and
+`the_chooser_tells_a_dark_theme_from_the_desktop` reads the desktop files fact 83 lists.
+`every_colour_carries_a_bitmap_of_its_own` is what catches a square left unpainted: every
+cell, the chip and both dialog swatches must carry a `Graphic` of their own.
+Fact 85's three reports are pinned by `a_colour_is_a_square_of_pixels_and_never_a_strip`
+(every colour carrier, in the constants *and* in both widgets' own specs, is `w` x
+`swatch.square_units(w)`, which is the only way 22 x 12 units becomes a failure), by
+`the_grid_leaves_clear_air_between_its_squares` (the pitch, and the grid's width paying
+for the air) and by `colour_squares_are_square_and_apart_on_the_screen`, which asks the
+peers in pixels what the specs only promise in units - a 23 x 17 cell, two neighbours
+0 px apart or a hex field too narrow for `#1F4E79` each fail it;
+`the_hex_field_is_wide_enough_for_the_value_it_shows` is the same bar without an
+office.
 `picker_paints_nothing_on_top_of_anything_else` compares every pair of painted
 controls, which is the only way a cramped line becomes an assertion, and
 `clicking_a_square_answers_the_picker` fires the listeners that were really attached
@@ -810,6 +1011,27 @@ page and therefore hides that spelling; it builds its own deck, saves it, reads
 it back and asserts the section ranges (`indexes`), their `Id`s and that the
 trailing unsectioned slide ends up in the last section.
 
+The section-name box is covered on both sides as well. In the document:
+`section_titles_name_every_section_slide` (one box per section slide, saying its own
+section, a plain `TextShape` and not a placeholder, at the deck's content margin, named
+after the position it now holds, and with the characters on its paragraph as much as on
+its shape), `section_titles_are_painted_without_a_plate` (a box that has been given a
+solid fill and a frame comes back flat from the next run, where it stood being unchanged),
+`re_running_section_titles_updates_the_boxes_and_adds_none`
+(the same shapes, moved where the settings now say), `section_titles_survive_a_duplicated_slide`
+(the request's own case: duplicate a slide and the copy's box is found and rewritten,
+not duplicated), `section_titles_leave_a_slide_without_a_section_alone` (nothing before
+the first section, and nothing left behind when a slide leaves one),
+`section_titles_are_not_drawn_on_the_plan_slides`, `remove_section_titles_loses_nothing_of_the_deck`
+and `section_titles_copy_the_first_slide_when_the_toggle_says_so`. What the label is
+*drawn as* is checked on the rendered page: `section_titles_do_not_print_through_the_heading`
+exports a PDF and compares the two bands of glyphs with `pdftotext -bbox` (fact 87).
+On the screen: `the_section_fields_are_on_the_settings_dialog` (font combo, hex field,
+point size, the three position fields, the toggle, none of them overlapping and all
+inside the window) and `the_position_fields_speak_centimetres_and_the_file_does_not`
+(fact 93, both directions and the rubbish cases), plus `the_section_commands_are_on_the_menu`
+and `menu_dispatch_writes_section_titles` for the two Jobs a click reaches.
+
 ### Looking at the result
 
 Whether the office has an API at all is worth asking before writing a widget
@@ -823,8 +1045,8 @@ settings dialog does (open, palette switched, second page, pointer on a square) 
 `dev/probe_message_box.py` puts our box next to every spelling of
 `createMessageBox` there is, printing what each answered. `dev/probe_picker_peers.py`
 prints every control's rectangle in model units and in peer pixels and then measures
-the *ink* of the pager row — it finds the client area by the known colour of the
-recent row's first square, because the window's peer answers `0,0` (fact 76) and the
+the *ink* of the pager row — it finds the client area by the known colour of a
+square painted `#7FFF00`, because the window's peer answers `0,0` (fact 76) and the
 desktop here is the same grey as the dialog — and prints how far off centre the page
 indicator's glyphs actually are. When a layout looks wrong, that table says whether
 the layout or the reading of it is at fault.
@@ -835,9 +1057,45 @@ colour*, and prints the ring of pixels around it — a bevel is dark on two side
 light on the other two, a solid line is one colour all round — plus which border
 properties the model has at all and whether a click reaches it. `dev/probe_underline.py`
 photographs six spellings of one line to find out what draws a mnemonic stroke.
-`dev/probe_debug_toggle.py` drives the menu item itself through the installed
+`dev/probe_border_colour.py` lays one colour out under every `Border` value with and
+without a `BorderColor` and prints the ring it finds: all six non-zero styles answer the
+theme's `#2B2E39` and 0 of 180 ring pixels red (fact 78). `dev/probe_swatch_ring.py`, with
+the `2` and `3` follow-ups that add the window's own position to the pointer coordinates
+(fact 79), photographs a candidate's ring and tells a bevel from a solid line, and
+`dev/probe_swatch_stream.py` checks the raw picture — it unzips the PNG and confirms the
+`Graphic` the office hands back really carries the bytes that were written.
+`dev/probe_theme.py` prints every route to the theme next to what each one answers, which
+is how fact 83's dead ends were ruled out. `dev/probe_swatch_bitmap.py` puts the three
+candidate controls on screen with a bitmap and prints which model properties each has, and
+`dev/probe_picker_width.py` renders the palette dropdown at nine widths, and
+`dev/probe_selector_fit.py` renders every palette name twice - in a `FixedText` nothing
+can cut and in a dropdown at the width in question - which is where fact 84's per-glyph
+and chrome constants come from. `dev/probe_picker_ink.py` photographs the chooser's
+whole header and grid and answers the four pixel reports at once: the name against the
+same name in a reference label, the ink of `<`, the page number and `>` and the air
+between the *glyphs*, each colour square's control box, its block of colour and its
+ring, and the value typed into the hex field at four widths until the ink stops growing
+(facts 84 and 85). `dev/probe_debug_toggle.py` drives the menu item itself through the installed
 extension, which is how "does nothing" was shown to be an empty box rather than a Job
 that never ran.
+
+The section-name box has three of its own. `dev/debug_section_titles.py` prints what the
+office really says about the boxes: every slide's section, each box's name (this is where
+a duplicated slide's `PlanImpress:SectionText:Slide: 1` was seen, fact 86), its rectangle
+and its characters at shape *and* paragraph level. `dev/render_section_titles.py` inserts
+the labels, exports a PDF and prints the bands of glyphs `pdftotext -bbox` answers with —
+the only witness for "the label does not print through the heading" (fact 87).
+`dev/probe_section_fields.py` photographs the settings dialog and prints, per control of
+the new rows, how many rows of ink it holds and how tall the tallest is, so a label that
+paints nothing, a font dropdown with no names and a caption drawn behind its neighbour are
+each visible; it anchors the crops on the dialog painted `#7FFF00` because the peer reports
+the frame, not the client area (fact 91). What the font list can and cannot be asked of is
+`dev/probe_fonts.py` (every route to the office's fonts with what each answers) and
+`dev/probe_font_peer.py` (the five steps of `installed_fonts` timed, 4701 descriptors in
+0.1 s with or without a document) — the hang those were chasing is *when* a second
+top-level peer is created, which `dev/probe_font_menu.py` isolates by opening the *Plan*
+menu first, and the fix is measured by `dev/probe_font_items.py` (itemCount 0 → 3 with the
+typed value intact, fact 90).
 
 Assertions cannot tell you a slide looks right, and a font size that is wrong by
 a factor of ten passed every test once. To see the generated deck: export a

@@ -81,7 +81,14 @@ def clusters_in(image, origin, top_units, bottom_units, left_units, right_units)
 
 
 def main():
-    names = palettes.load_palettes()
+    # the way the settings dialog builds it (dialog.py): the deck's own colours in
+    # front, whose name is the long one that was being cut.  The deck's palette has
+    # to have colours in it, or the picker opens on a one-page palette, the arrows
+    # are switched off, their dim glyphs are no longer ink and the row cannot be
+    # measured at all.
+    deck = [("", index * 0x010101) for index in range(1, 70)]
+    names = [("In this presentation", deck)]
+    names += palettes.load_palettes()
     p = picker.ColourPicker(lo.connect(), names, current=0x1F4E79,
                             title="Heading colour",
                             recent=[("#112233", 0x112233)])
@@ -142,6 +149,15 @@ def main():
             print("ink: indicator centre %.1f, midway between the arrows %.1f -> "
                   "off centre by %+.1f px (a unit is %.2f px)"
                   % (centre, between, centre - between, UNIT_X))
+            # ... and how much clear air the number actually has.  Centring the
+            # *box* says nothing about the ink: a FixedText has no TextAlign (fact
+            # 72) and paints its words at the left of its box, so a box sized for
+            # 12/12 showing 1/1 puts the digits against the < (the report "(1/1) is
+            # still too close to < and >").
+            before, after = middle[0] - left[1], right[0] - middle[1]
+            print("air: %d px = %.1f units left of the number, %d px = %.1f units "
+                  "right of it (the arrows' own glyphs end %d and %d px from the ink)"
+                  % (before, before / UNIT_X, after, after / UNIT_X, before, after))
     p.dispose()
     return 0
 

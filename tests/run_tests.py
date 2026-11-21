@@ -33,6 +33,8 @@ NO_FOOTER_FIXTURE = os.path.join(HERE, "fixtures", "sections_no_footer.odp")
 #: The section titles the fixture carries, in deck order (`make_fixture.py`).
 SECTION_NAMES = ["Introduction", "Architecture", "Demo"]
 SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
+#: The URL *Section Titles* is bound to, for the dispatch test below.
+SECTION_SERVICE = "service:org.devsys.planimpress.SectionTitles?section_titles"
 #: what ``tests/make_fixture.py`` writes into the footer of every slide
 FOOTER_TEXT = "Quarterly Review 2026"
 
@@ -501,8 +503,9 @@ def picker_cells_are_laid_out_apart():
         spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
     shared = dict((spot, names) for spot, names in spots.items() if len(names) > 1)
     assert not shared, "squares on top of each other: %s" % shared
-    # ten to a row with nothing between the squares: the office's dropdown is a
-    # block of colour, not a list of buttons with air around each
+    # ten to a row, each separated from the next: squares that touch read as one block
+    # of colour and the office's own dropdown does not do that - see
+    # :func:`the_grid_leaves_clear_air_between_its_squares` for the air itself
     rows = {}
     for name, props in cells.items():
         rows.setdefault(props["PositionY"], []).append(props)
@@ -510,8 +513,9 @@ def picker_cells_are_laid_out_apart():
         assert len(row) == picker.COLUMNS, "row at %s holds %s squares" % (y, len(row))
         row.sort(key=lambda props: props["PositionX"])
         for left, right in zip(row, row[1:]):
-            assert right["PositionX"] == left["PositionX"] + left["Width"], \
-                "gap between %s and %s" % (left["PositionX"], right["PositionX"])
+            assert right["PositionX"] == left["PositionX"] + left["Width"] + \
+                picker._CELL_GAP, "gap between %s and %s" % (
+                    left["PositionX"], right["PositionX"])
 
 
 @test
@@ -561,6 +565,15 @@ def picker_is_the_offices_dropdown():
             "the page indicator is behind an arrow: %s" % specs
         assert abs(label["PositionX"] + label["Width"] / 2.0 - (left + right) / 2.0) \
             <= 1, "the page indicator is not centred between the arrows: %s" % specs
+        # ... and centring the box is only half of it: the box used to fill the whole
+        # space between the arrows, so its words started against one and the report
+        # was "(1/1) is still too close to < and >".  Three units is the width of a
+        # glyph, the least there can be between two things that are read as separate;
+        # it is a number here rather than the code's own constant, because a bar that
+        # moves with the code it is meant to catch catches nothing.
+        assert label["PositionX"] - left >= 3 and \
+            right - (label["PositionX"] + label["Width"]) >= 3, \
+            "the page number is jammed against an arrow: %s" % specs
     # ... and it is sized for the longest page count the picker offers, not for the
     # palette that happened to be showing when the window opened
     long_palette = rows_of(picker.header_specs(names, 12, 0, 0, 12))
@@ -620,50 +633,347 @@ def picker_is_the_offices_dropdown():
 
 
 @test
-def colours_are_painted_flat_with_a_solid_line():
-    """Every colour is a flat square with a solid line round it, never a bevel.
+def the_chooser_is_wide_enough_for_the_names_it_shows():
+    """The window is as wide as the longest palette name needs - the grid is not.
+
+    "Put the dialog a bit wider so *In this presentation* is not cut."  The deck's own
+    colours are offered under that name (``palettes.deck_palette()``, asserted by
+    ``deck_palette_lists_the_colours_the_deck_uses``): twenty characters, in a selector
+    that had the one width the grid happened to need.  A list box cannot be asked how
+    wide its words are (fact 46: no ``FontDescriptor`` on a peer, no text metrics), so
+    the bar is the number ``dev/probe_picker_width.py`` photographs - the same words in
+    a ``FixedText`` of the same font are 142 px of ink, 56 dialog units, before the
+    drop-down arrow.  The squares are ten columns of the office's own size and stay
+    that size; the window grows around them, the grid is centred in the extra, and the
+    page number keeps the room the arrows leave it.
+    """
+    from plan_impress import picker
+    name = "In this presentation"
+    names = ["standard", "libreoffice", "freecolour-hlc", name]
+    bands = picker.full_bands([], name)
+    specs, (width, height) = picker._field_specs(
+        names, bands, 5, 0, 0x1F4E79, "1F4E79", 0,
+        entries=[("Blue 1", 0x2A57D7)] * picker.page_size([]), widest_pages=5)
+    rows = dict((control, dict(props)) for control, _service, props in specs)
+    # The bar is the number ``dev/probe_selector_fit.py`` photographs, not a formula
+    # of the picker's own: the probe renders each name twice - in a ``FixedText``
+    # nothing can cut, and in a dropdown at this width - and finds *In this
+    # presentation* cut at 74 units and whole at 78.  The first version of this test
+    # asked for the words and six units more, passed, and the name was cut in half on
+    # the screen; a bar that low pins nothing, and a bar written with the code's own
+    # constants moves when the code is wrong.
+    selector = rows["palettes"]
+    assert selector["Width"] >= 78, \
+        "%d units is what the probe photographs as cut for %r" % (
+            selector["Width"], name)
+    # ... and for a name of *wide* letters, which is what the per-glyph constant has
+    # to be sized for: the probe measures "Recently used" at 102 px of ink over 13
+    # characters - 3.1 units a glyph, where "In this presentation" is 2.79 - and the
+    # arrow and its padding cost 51 px, so 153 px = 61 units is the floor.
+    assert picker.selector_width(["Recently used"]) >= 61, \
+        "%d units cuts a name the probe measures at 153 px" % \
+        picker.selector_width(["Recently used"])
+    assert selector["Width"] >= len(name) * picker._LIST_CHAR_W + \
+        picker._LIST_CHROME_W, "the box holds neither the words nor the arrow"
+    assert selector["PositionX"] + selector["Width"] <= rows["previous"]["PositionX"], \
+        "the selector is drawn under the pager"
+    # the squares are not stretched to pay for the name, and they are centred, or the
+    # extra width would leave them shoved into one side of their own popup
+    cells = [dict(props) for control, _service, props in specs
+             if control.startswith("cell")]
+    left = min(cell["PositionX"] for cell in cells)
+    right = max(cell["PositionX"] + cell["Width"] for cell in cells)
+    assert right - left == picker._GRID_W, "the grid was stretched to pay for the name"
+    assert abs(left - (width - right)) <= 1, \
+        "the grid is not centred: %d units of margin left, %d right" % (
+            left, width - right)
+    # the page number keeps what it needs even in a window grown for a name
+    room = rows["next"]["PositionX"] - (rows["previous"]["PositionX"]
+                                        + rows["previous"]["Width"])
+    assert rows["page"]["Width"] >= len(picker.page_label(4, 5)) * 2.8, \
+        "the indicator lost its room to the selector: %d of %d" % (
+            rows["page"]["Width"], room)
+    # and nothing hangs outside the window it was measured for
+    for control, _service, props in specs:
+        props = dict(props)
+        assert 0 <= props["PositionX"] and props["PositionX"] + props["Width"] \
+            <= width, "%s is outside the chooser on the right" % control
+        assert props["PositionY"] + props["Height"] <= height, \
+            "%s is below the bottom of the chooser" % control
+    # short names grow nothing: the deck's two-word list gets the same window no
+    # names at all would, and it is never wider than the grid's own floor unless the
+    # header's furniture needs the room
+    assert picker.content_width(["standard", "tonal"]) == picker.content_width([])
+    assert picker.content_width([]) >= picker.DIALOG_WIDTH
+
+
+@test
+def a_swatch_is_its_colour_inside_a_line_of_the_contrast_colour():
+    """The bitmap a square is painted from: its colour, and one pixel of line.
+
+    A colour cannot be given a line of its *own* by the toolkit - every ``BorderStyle``
+    paints the theme's grey and ``BorderColor`` is ignored (fact 78) - so the line is
+    drawn by :mod:`plan_impress.swatch`, with nothing beyond ``zlib`` and ``struct``
+    because LibreOffice's own Python has no imaging library.  A file nobody can read is
+    not a tested file, so this reads it back with the same two: the size the control is
+    painted at, a row of nothing but the line above and below, the line at both sides,
+    and the colour in the middle.
+    """
+    import struct
+    import zlib
+    from plan_impress import swatch
+    fill, line = 0x1F4E79, 0xF2F2F2
+
+    def rows_of(payload):
+        """The decoded scanlines of a PNG written by :func:`swatch.png_bytes`."""
+        assert payload[:8] == b"\x89PNG\r\n\x1a\n", \
+            "not a PNG: the office would paint an empty square"
+        assert payload[12:16] == b"IHDR", payload[12:16]
+        width, height, depth, kind = struct.unpack(">IIBB", payload[16:26])
+        assert (depth, kind) == (8, 2), \
+            "not 8-bit RGB, so not the colour that was asked for"
+        body, pos = [], 8
+        while pos + 8 <= len(payload):
+            size, kind = struct.unpack(">I4s", payload[pos:pos + 8])
+            if kind == b"IDAT":
+                body.append(zlib.decompress(payload[pos + 8:pos + 8 + size]))
+            pos += 12 + size
+        raw = b"".join(body)
+        stride = 1 + 3 * width
+        assert len(raw) == stride * height, \
+            "%d bytes for a %dx%d RGB image" % (len(raw), width, height)
+        return width, height, stride, [raw[i * stride:(i + 1) * stride]
+                                       for i in range(height)]
+
+    def pixel(row, x):
+        return (row[1 + 3 * x], row[2 + 3 * x], row[3 + 3 * x])
+
+    def rgb(colour):
+        return (colour >> 16 & 255, colour >> 8 & 255, colour & 255)
+
+    width, height, _stride, rows = rows_of(swatch.png_bytes(23, 17, fill, line))
+    assert (width, height) == (23, 17), (width, height)
+    assert all(row[0] == 0 for row in rows), "a scanline must start with its filter byte"
+    assert all(pixel(row, x) == rgb(line) for row in (rows[0], rows[-1])
+               for x in range(width)), "no line across the top and the bottom"
+    middle = rows[height // 2]
+    assert pixel(middle, 0) == rgb(line) and pixel(middle, width - 1) == rgb(line), \
+        "the line does not close on the sides"
+    assert pixel(middle, width // 2) == rgb(fill), "the colour is not what is painted"
+    # a square with no line is the colour right to the edge: the fallback when no
+    # bitmap can be made at all, which has to be the old look and not a hole
+    _w, _h, _s, rows = rows_of(swatch.png_bytes(4, 4, fill))
+    assert all(pixel(row, x) == rgb(fill) for row in rows for x in range(4)), rows
+    # the size the bitmap is drawn at is the size the control is painted at, because
+    # the line is one pixel *of the bitmap* (facts 28 and 64: 2.53 x 2.39 px to a unit)
+    assert swatch.bitmap_size(9, 7) == (23, 17), swatch.bitmap_size(9, 7)
+
+
+@test
+def the_line_round_a_colour_contrasts_with_what_it_sits_on():
+    """Black on a dark theme needs a light line; white on a light theme a dark one.
+
+    "look how the default palette color are drawn, with a thin white border on a dark
+    theme, and think dark border and a white theme."  The office's own dropdown does
+    exactly that and no property of ours can (fact 78), so the rule lives in
+    :func:`plan_impress.swatch.ring_colour` and is pinned against the two colours that
+    show whether it is right - and against the case where nothing says which theme the
+    office is on, which has to fail safe: each square is then lined against its own
+    colour, so a black square never arrives without an edge.
+    """
+    from plan_impress import swatch
+    on_dark = swatch.ring_colour(0x000000, dark=True)
+    on_light = swatch.ring_colour(0xFFFFFF, dark=False)
+    assert swatch.luminance(on_dark) >= 0xC0, \
+        "%06X is not a light line for a dark theme" % on_dark
+    assert swatch.luminance(on_light) <= 0x60, \
+        "%06X is not a dark line for a light theme" % on_light
+    assert on_dark != on_light, "one line for both themes is one wrong theme"
+    # one line for every square of a grid, which is how the office's own looks
+    assert swatch.ring_colour(0x2A57D7, dark=True) == on_dark
+    assert swatch.ring_colour(0x93CAD7, dark=False) == on_light
+    # nothing said about the theme: the colour that would disappear gets the light
+    # line, the one that already stands out gets the dark one
+    assert swatch.ring_colour(0x000000) == on_dark
+    assert swatch.ring_colour(0xFFFFFF) == on_light
+    assert swatch.ring_colour(0x1F4E79) == on_dark, "a dark blue on a dark dialog"
+    assert swatch.ring_colour(0xF79646) == on_light
+    # and neither is the grey the office would have drawn: that is the line that made
+    # the dark squares vanish (dev/probe_border_colour.py, fact 78)
+    assert (swatch.luminance(on_dark), swatch.luminance(on_light)) != (0x2B, 0x2B)
+
+
+@test
+def the_chooser_tells_a_dark_theme_from_the_desktop():
+    """Which theme the office is on: asked of the desktop, because nothing else says.
+
+    ``getSettings`` and ``XStyleFacility`` are not on the toolkit proxy and the one
+    theme node that will answer, ``/org.openoffice.Office.Common/Appearance``, says
+    ``ApplicationAppearance = 0`` and ``LibreOfficeTheme = 0`` on this **dark** office:
+    both are its "follow the system" value and no enum in the type repository says which
+    number means dark (``dev/probe_theme.py``, ``dev/probe_border_colour.py``).  So the
+    files LibreOffice itself reads when it is told to follow the system are read here,
+    and the answer has to be right for them and ``None`` - never a guess - when there is
+    nothing to read at all.
+    """
+    import os
+    import tempfile
+    from plan_impress import swatch
+
+    def says(**files):
+        home = tempfile.mkdtemp()
+        for relative, contents in files.items():
+            path = os.path.join(home, relative)
+            if not os.path.isdir(os.path.dirname(path)):
+                os.makedirs(os.path.dirname(path))
+            with open(path, "w") as handle:
+                handle.write(contents)
+        return swatch.theme_is_dark(environ={}, home=home)
+
+    gtk = os.path.join(".config", "gtk-3.0", "settings.ini")
+    assert says(**{gtk: "[Settings]\ngtk-application-prefer-dark-theme=true\n"}) is True
+    assert says(**{gtk: "[Settings]\ngtk-theme-name=Arc-Dark\n"}) is True
+    assert says(**{gtk: "[Settings]\ngtk-theme-name=Adwaita\n"}) is False
+    assert says(**{".gtkrc-2.0": 'gtk-theme-name="Breeze Dark"\n'}) is True
+    assert says(**{os.path.join(".config", "kdeglobals"):
+                   "[General]\nColorScheme=Breeze\n"}) is False
+    assert says() is None, "with nothing to read the honest answer is 'unknown'"
+    # what the developer says beats everything: a screenshot has to be able to say
+    # which theme it was taken in (the PLAN_IMPRESS_DATA_DIR of the theme question)
+    assert swatch.theme_is_dark(environ={"PLAN_IMPRESS_THEME": "light"},
+                                home="/nonexistent") is False
+    assert swatch.theme_is_dark(environ={"PLAN_IMPRESS_THEME": "dark"},
+                                home="/nonexistent") is True
+    # and the environment's own spelling of it, for a desktop that only says it there
+    assert swatch.theme_is_dark(environ={"GTK_THEME": "Adwaita:dark"},
+                                home="/nonexistent") is True
+
+
+@test
+def colours_are_painted_flat_with_a_contrast_line():
+    """Every colour is a flat square with a thin line of its own, never a bevel.
 
     The report was "a very ugly perspective-style border around the color ... both in
-    the palette and in the option screen".  That border is the theme's button bevel -
-    dark above and to the left, light below and to the right, which is what
-    ``dev/probe_swatch_look.py`` measures on a button - and a button model has no
-    ``Border`` to switch it off with (fact 65).  Both places therefore paint the
-    colour on a label with ``Border`` = ``BorderStyle.LINE``, which the office draws in
-    one colour on all four sides (fact 77).
+    the palette and in the option screen"; the follow-up was to copy the office's own
+    grid, which lines every swatch in the contrast of the theme.  The first of those is
+    the theme's **button bevel** - dark above and to the left, light below and to the
+    right, measured in ``dev/probe_swatch_look.py`` - and a button model has no
+    ``Border`` to switch it off with (fact 65).  The second is something no property can
+    do: a label's line is the theme's colour in every ``BorderStyle`` there is,
+    ``BorderColor`` accepted and ignored (``dev/probe_border_colour.py``, fact 78).  So
+    every colour - the squares of the grid, the chip under them, the swatches beside the
+    hex fields - is an **image control** carrying a bitmap :mod:`plan_impress.swatch`
+    draws, and what a test can pin without a display is the four properties that make
+    that bitmap land: no office border to fight the drawn line, a ``ScaleMode`` that
+    covers the square, no tab stop, and the colour written where a peer cannot hide it.
     """
-    from plan_impress import dialog, picker
+    from plan_impress import dialog, picker, swatch
     recent = [("#112233", 0x112233)]
     bands = picker.full_bands(recent, "standard")
     entries = picker.recent_colours(recent) + [("Blue 1", 0x2A57D7)]
+    # the colours a square may stand for: the page's, and the colour being edited for
+    # the squares the palette does not fill (which are switched off, so they cannot be
+    # picked - see picker_hides_the_cells_beyond_the_palette)
+    hexes = set(config.color_to_hex(colour) for _name, colour in entries)
+    hexes.add(config.color_to_hex(0x1F4E79))
     squares = dict((name, (service, dict(props))) for name, service, props
                    in picker.cell_specs(bands, 0x1F4E79, entries))
     assert len(squares) == picker.CELLS, len(squares)
     for name, (service, props) in squares.items():
-        assert service == picker._MODEL_FIXED, \
-            "%s is a %s, and the office paints a button with a bevel around the colour" \
-            % (name, service.rsplit(".", 1)[-1])
-        assert props["Border"] == dialog.BORDER_LINE, \
-            "%s has no solid line round its colour" % name
-        assert props["BackgroundColor"] is not None, name
+        assert service == picker._MODEL_IMAGE, \
+            "%s is a %s: a button brings the theme's bevel and a label can only be " \
+            "lined in the theme's own colour" % (name, service.rsplit(".", 1)[-1])
+        assert props["Border"] == 0, "%s asks for the office's line as well" % name
+        assert props["ScaleMode"] == swatch.SCALE_MODE_FILL, \
+            "%s would leave the control's own colour round the bitmap" % name
+        assert props["Tabstop"] is False, "%s can be tabbed to" % name
+        assert props["Tag"] in hexes, \
+            "%s does not say which colour it stands for" % name
     # the chip that says what the pointer is over is the same kind of square
     bottom = picker.bottom_of(bands)
     below = dict((name, (service, dict(props))) for name, service, props
                  in picker.bottom_specs(bottom, 0x1F4E79, "1F4E79"))
-    assert below["preview"][0] == picker._MODEL_FIXED, "the chip is a bevelled button"
-    assert below["preview"][1]["Border"] == dialog.BORDER_LINE, below["preview"]
+    assert below["preview"][0] == picker._MODEL_IMAGE, "the chip is a bevelled button"
+    assert below["preview"][1]["Border"] == 0, below["preview"]
+    assert below["preview"][1]["Tag"] == "1F4E79", below["preview"][1]
     # and so is the one in the settings dialog: the "option screen" of the report
     values = {"MutedColor": "B0B0B0", "TextColor": "000000",
-              "Title": "Plan", "master": "Default"}
+              "Title": "Plan", "master": "Default", "SectionColor": "1F4E79"}
     rows = dict((name, (service, dict(props))) for name, service, props
                 in dialog._field_specs(values, ["Default"]))
     for field in dialog._COLOUR_FIELDS:
         service, props = rows["swatch" + field]
-        assert service == dialog._FIXED_TEXT, \
+        assert service == dialog._IMAGE, \
             "the %s swatch is a %s" % (field, service.rsplit(".", 1)[-1])
-        assert props["Border"] == dialog.BORDER_LINE, props
+        assert props["Border"] == 0, props
+        assert props["Tag"] == values[field], props
         assert props["BackgroundColor"] == config.hex_to_color(values[field], 0), props
     # the buttons that stay buttons (they are buttons: the office bevels those)
     assert rows["ok"][0] == dialog._BUTTON and rows["cancel"][0] == dialog._BUTTON
+
+
+@test
+def every_colour_carries_a_bitmap_of_its_own():
+    """The squares and swatches really are given a bitmap, lined for this theme.
+
+    The test above pins the description; this is as close as an assertion gets to the
+    picture.  After the chooser has been shown, every square's model must answer a
+    ``Graphic`` - the office paints nothing without one - and what was asked for has to
+    be that square's own colour, inside a line of the contrast colour for the theme the
+    office is on, at the pixel size the square is painted at.  The graphics
+    :mod:`plan_impress.swatch` has already made are the record of that;
+    ``dev/probe_swatch_ring.py`` is the photograph of the same thing.
+    """
+    from plan_impress import dialog, picker, swatch
+    ctx = lo.connect()
+    colours = [("Black", 0x000000), ("Blue", 0x2A57D7), ("White", 0xFFFFFF)]
+    window = picker.ColourPicker(ctx, [("Few", colours)], current=0x112233)
+    window.build()
+    try:
+        window.show()
+        drawn = set(swatch._GRAPHICS)
+        rect = window.control(picker.cell_name(0)).getPeer().getPosSize()
+        for index, (name, colour) in enumerate(colours):
+            control_model = window.model.getByName(picker.cell_name(index))
+            assert getattr(control_model, "Graphic", None) is not None, \
+                "%s has no bitmap: the office paints a flat colour with no edge" % name
+            ring = swatch.ring_colour(colour, window.dark)
+            assert (colour, rect.Width, rect.Height, ring, swatch.RING_WIDTH) in drawn, \
+                "%s was not drawn with a %06X line at the %dx%d it is painted at" \
+                % (name, ring, rect.Width, rect.Height)
+            assert control_model.Tag == config.color_to_hex(colour), control_model.Tag
+        # the chip under the grid is a drawn square as well, and it is not a square of
+        # the grid: at the grid's bitmap size its line came out a pixel and a half
+        # thick, which is the kind of thing only the pixels of the control tell you
+        chip = window.control("preview").getPeer().getPosSize()
+        window._show_colour(0x000000, "Black")
+        lined = (0x000000, chip.Width, chip.Height,
+                 swatch.ring_colour(0x000000, window.dark), swatch.RING_WIDTH)
+        where = "the chip is not lined at the %dx%d it is painted at" % (
+            chip.Width, chip.Height)
+        assert lined in set(swatch._GRAPHICS), where
+    finally:
+        window.dispose()
+
+    settings = dict(config.DEFAULTS)
+    settings.update({"muted_color": 0x000000, "text_color": 0xFFFFFF})
+    form = dialog.SettingsDialog(ctx, settings, ["Master1"])
+    form.build()
+    try:
+        drawn = set(swatch._GRAPHICS)
+        for field in dialog._COLOUR_FIELDS:
+            control_model = form.control_model("swatch" + field)
+            colour = config.hex_to_color(form.values[field], 0)
+            assert getattr(control_model, "Graphic", None) is not None, \
+                "the %s swatch paints no bitmap" % field
+            assert (colour, swatch.bitmap_size(dialog._SWATCH_W, dialog._SWATCH_H)[0],
+                    swatch.bitmap_size(dialog._SWATCH_W, dialog._SWATCH_H)[1],
+                    swatch.ring_colour(colour, form._dark),
+                    swatch.RING_WIDTH) in drawn, \
+                "the %s swatch is not lined for this theme" % field
+        assert form.warnings == [], form.warnings
+    finally:
+        form.dispose()
 
 
 @test
@@ -702,6 +1012,213 @@ def picker_paints_nothing_on_top_of_anything_else():
                      or right["PositionY"] + right["Height"] <= left["PositionY"])
             assert apart, "%s is drawn on top of %s: %s / %s" % (
                 left_name, right_name, left, right)
+
+
+@test
+def a_colour_is_a_square_of_pixels_and_never_a_strip():
+    """Every colour carrier is square in *pixels*, which a dialog unit is not.
+
+    "the color picker's color sample must be exact squares, not rectangles".  A dialog
+    unit is 2.53 px across and 2.39 px down (fact 28), so a control that is a square in
+    the model is a rectangle on the screen: the 9 x 7 units a square of the grid used to
+    be is 23 x 17 px, and the swatch beside a hex field in the settings dialog was
+    22 x 12 units, 56 x 29 px - a strip.  ``dev/probe_picker_ink.py`` paints candidate
+    pairs and photographs them (13 x 14 units is 33 x 33 px, the smallest pair that is
+    the same both ways at a size one can click); the rule that comes out of the
+    photographs is :func:`swatch.square_units`, and everything that shows a colour in
+    this extension is sized by it, so they cannot drift apart.
+    """
+    from plan_impress import dialog, picker, swatch
+    carriers = [("a square of the chooser's grid", picker.CELL_W, picker.CELL_H),
+                ("the chip under the grid", picker._SWATCH_W, picker._SWATCH_H),
+                ("the swatch beside a hex field", dialog._SWATCH_W, dialog._SWATCH_H)]
+    for what, width, height in carriers:
+        assert width >= 8, "%s is %d units: too small to click or to read" % (
+            what, width)
+        assert height == swatch.square_units(width), \
+            "%s is %dx%d units, which the photographs come back as %d x %d px" % (
+                what, width, height, width * swatch.PX_PER_UNIT_X,
+                height * swatch.PX_PER_UNIT_Y)
+        assert abs(width * swatch.PX_PER_UNIT_X
+                   - height * swatch.PX_PER_UNIT_Y) <= 1, \
+            "%s is %dx%d units: %d px wide and %d px tall is not a square" % (
+                what, width, height, width * swatch.PX_PER_UNIT_X,
+                height * swatch.PX_PER_UNIT_Y)
+    # the constants are no use unless the rectangles the two widgets are built from
+    # are the same squares
+    values = {"MutedColor": "B0B0B0", "TextColor": "000000",
+              "Title": "Plan", "Master": "Default"}
+    carriers += [("the swatch in the settings dialog's specs", 0, 0)]
+    for name, _service, props in dialog._field_specs(values, ["Default"]):
+        if not name.startswith("swatch"):
+            continue
+        props = dict(props)
+        assert props["Height"] == swatch.square_units(props["Width"]), \
+            "the %s is %dx%d units in the dialog's own specs" % (
+                name, props["Width"], props["Height"])
+        carriers[-1] = (name, props["Width"], props["Height"])
+    for name, _service, props in picker.bottom_specs(60, 0x1F4E79):
+        if name != "preview":
+            continue
+        props = dict(props)
+        assert props["Height"] == swatch.square_units(props["Width"]), \
+            "the %s is %dx%d units in the chooser's own specs" % (
+                name, props["Width"], props["Height"])
+    assert all(width and height for _what, width, height in carriers), \
+        "nothing was checked: %s" % (carriers,)
+
+
+@test
+def the_grid_leaves_clear_air_between_its_squares():
+    """Two colours that touch read as one block, so the grid is a grid of squares.
+
+    "add a fex px between colors in the menu, just like in the font color picker in
+    native libreoffice".  The squares used to tile - ``x + column * CELL_W`` - which
+    makes ten of them one rectangle of colour with no seam to see a choice in; the
+    office's own dropdown separates its swatches.  :func:`picker.cell_position` is the
+    one place the pitch is decided, and the grid's width has to pay for the air or the
+    last column is drawn outside the window.
+    """
+    from plan_impress import picker, swatch
+    assert picker._CELL_GAP >= 2, \
+        "%d units of air is %d px: nothing between two colours" % (
+            picker._CELL_GAP, picker._CELL_GAP * swatch.PX_PER_UNIT_X)
+    first = picker.cell_position(0)
+    right = picker.cell_position(1)
+    assert right[0] - (first[0] + first[2]) == picker._CELL_GAP, \
+        "two squares of one row are %d units apart, not %d" % (
+            right[0] - (first[0] + first[2]), picker._CELL_GAP)
+    below = picker.cell_position(picker.COLUMNS)
+    assert below[1] - (first[1] + first[3]) == picker._CELL_GAP, \
+        "two squares of one column are %d units apart" % (
+            below[1] - (first[1] + first[3]))
+    assert picker._GRID_W == picker.COLUMNS * picker.CELL_W + \
+        (picker.COLUMNS - 1) * picker._CELL_GAP, \
+        "the grid's width does not count the air, so the last column is outside"
+
+
+@test
+def colour_squares_are_square_and_apart_on_the_screen():
+    """The peers agree with the rule: the same number of pixels both ways, not touching.
+
+    Both reports are about pixels and no property says what a control paints (fact 46),
+    so this asks the real controls what geometry their peers were given - which is the
+    peer, in pixels, and the only thing in the API that answers for a square.  A cell
+    back at 9 x 7 units fails the first assertion with 23 x 17 px; ``_CELL_GAP`` at 0
+    fails the second with 0 px between two neighbours; and the field a colour is typed
+    into is asked the same question, because "#1F4E79" being cut in half is the same
+    kind of report as a square that is not one.
+    """
+    from plan_impress import picker
+    ctx = lo.connect()
+    colours = [("Blue %d" % index, 0x2A57D7 + 0x010101 * index)
+               for index in range(1, 21)]
+    window = picker.ColourPicker(ctx, [("Few", colours)], current=0x112233,
+                                 recent=[("#112233", 0x112233)])
+    window.build()
+    try:
+        window.show()
+
+        def rect(name):
+            size = window.control(name).getPeer().getPosSize()
+            return (int(size.X), int(size.Y), int(size.Width), int(size.Height))
+
+        for name in (picker.cell_name(0), picker.cell_name(1), "preview"):
+            _x, _y, width, height = rect(name)
+            assert abs(width - height) <= 1, \
+                "%s is %dx%d px: a rectangle, not the square that was asked for" % (
+                    name, width, height)
+        first, right = rect(picker.cell_name(0)), rect(picker.cell_name(1))
+        across = right[0] - (first[0] + first[2])
+        assert across >= 3, "two colours %d px apart read as one block" % across
+        below = rect(picker.cell_name(picker.COLUMNS))
+        down = below[1] - (first[1] + first[3])
+        assert down >= 3, "two colours one above the other are %d px apart" % down
+        # the same question asked of the one control that carries words a user has to
+        # be able to read: the field a colour is typed into
+        assert rect("hex")[2] >= 70, \
+            "the hex field is %d px, and the probe photographs '#1F4E79' at 64 px of " \
+            "digits before the field's own padding" % rect("hex")[2]
+    finally:
+        window.dispose()
+
+
+@test
+def the_hex_field_is_wide_enough_for_the_value_it_shows():
+    """The field a colour is typed into is not cut - its seven characters fit.
+
+    "the field that can be used to set the hex value of the color in the color pick is a
+    bit too narrow".  It borrowed the button's width, 26 units = 66 px, and
+    ``config.hex_to_color`` accepts a leading ``#``, so seven characters have to fit
+    where the box was painted for six.  ``dev/probe_picker_ink.py`` paints the same
+    value into fields of four widths and photographs the ink: 49, 54, 62 and 64 px, the
+    last of them in a 73 px box - so it stops growing there and was clipped at the 66 px
+    this had.  The bar is those 64 px of digits plus the padding the field keeps for
+    itself; the peer is asked for the same number in
+    :func:`colour_squares_are_square_and_apart_on_the_screen`.
+    """
+    from plan_impress import picker, swatch
+    specs, (_width, _height) = picker._field_specs(
+        ["standard"], picker.full_bands([], "standard"), 1, 0, 0x1F4E79, "1F4E79", 0)
+    rows = dict((name, dict(props)) for name, _service, props in specs)
+    box = rows["hex"]["Width"] * swatch.PX_PER_UNIT_X
+    assert box >= 70, \
+        "the hex field is %d units = %d px, and the probe photographs '#1F4E79' at " \
+        "64 px of digits before the field's own padding" % (rows["hex"]["Width"], box)
+
+
+@test
+def the_message_box_is_wide_enough_for_the_path_it_prints():
+    """The log path *Toggle Debug Log* prints reaches its box whole.
+
+    "the *debug log enable/disable* window message has not enough width, the message is
+    cut (incomplete path)".  A ``FixedText`` wraps nothing (fact 72), so a line longer
+    than its own box is not wrapped - it is painted past the edge and the tail never
+    appears; the box wraps in Python at ``_BOX_CHARS`` and that number has to agree with
+    the width of the label.  ``dev/probe_message_width.py`` photographs the path's own
+    characters at the box's font: 240 px of ink over 30 of them, 296 px over 38, and the
+    label stops painting at its own edge - which is how 44 characters (344 px) in a
+    278 px label looked like a truncated path.
+    """
+    from plan_impress import dialog, swatch
+    path = "/home/derumigny/.config/libreoffice/4/user/planimpress/debug.log"
+    text = "Debug log enabled, writing to:\n%s" % path
+    lines = dialog.box_lines(text)
+    room = dialog._BOX_TEXT_W * swatch.PX_PER_UNIT_X
+    for line in lines:
+        assert len(line) * dialog._BOX_CHAR_W <= room, \
+            "%r is %d characters, about %d px of ink, in a label %d units = %d px wide" \
+            % (line, len(line), len(line) * dialog._BOX_CHAR_W,
+               dialog._BOX_TEXT_W, room)
+    assert path in "".join(lines), "the wrapping lost part of the path: %s" % lines
+    specs, (width, _height) = dialog.box_specs(text, "info", 1, "Debug Log")
+    for name, _service, props in specs:
+        if not name.startswith("text"):
+            continue
+        props = dict(props)
+        assert props["PositionX"] + props["Width"] <= width, \
+            "%s is painted outside the window" % name
+
+
+@test
+def the_page_indicator_is_not_cut():
+    """The page number has air round it, or its last digit is painted past the box.
+
+    "in the color picker box, the text 2/2 of the corresponding page is slightly cut on
+    the right (not enough padding?)".  The indicator's box is sized by arithmetic,
+    because a ``FixedText`` has no ``TextAlign`` (fact 72) and no way to be asked how
+    wide its words are (fact 46); at ``+ 1`` unit of bearing ``dev/probe_picker_ink.py``
+    photographs "1/2" as 20 px of ink in a 23 px box, 2 px of air before the first digit
+    and 1 px after the last.  The bars are the ink that probe measures for the shortest
+    and the widest string the picker answers with, plus 6 px to be sure.
+    """
+    from plan_impress import picker, swatch
+    for pages, ink in ((2, 20), (12, 32)):
+        label = picker.page_label(pages - 1, pages)
+        units = picker.page_label_width(pages)
+        assert units * swatch.PX_PER_UNIT_X >= ink + 6, \
+            "%r paints %d px in a box of %d units = %d px" % (
+                label, ink, units, units * swatch.PX_PER_UNIT_X)
 
 
 @test
@@ -915,12 +1432,14 @@ def message_box_answers_its_buttons():
 
 @test
 def toggling_the_debug_log_says_what_it_did():
-    """*Toggle Debug Log* has to show something, or it is a menu item that does nothing.
+    """*Toggle Debug Log* has to show something, and say where the log is in full.
 
     The Job always ran and always moved the marker; what was missing was the report.
     Both halves are asserted here: the marker the logger looks for really flips, and
     a box that names the log file is asked for - with the office's own
-    ``createMessageBox`` this call produced a window with nothing in it.
+    ``createMessageBox`` this call produced a window with nothing in it.  The path then
+    has to *reach* the box, whole: the first version wrapped at 44 characters, painted
+    344 px of path in a 278 px label and the tail never appeared.
     """
     import handler
     from plan_impress import config, dialog
@@ -1039,7 +1558,14 @@ def dialog_build_and_read_back():
         result = window.result()
         assert result == {"muted_color": 0x00FF00, "text_color": 0x000000,
                           "title": "Agenda", "master": "Master2",
-                          "recent_colors": []}, result
+                          "recent_colors": [],
+                          # the section box: nothing was set, so nothing is claimed -
+                          # empty means "the deck's own", which is what a deck that
+                          # has never been styled gets
+                          "section_color": config.DEFAULT_SECTION_COLOR,
+                          "section_font": "", "section_size": 0.0,
+                          "section_x": None, "section_y": None,
+                          "section_width": None, "section_follow_first": False}, result
         # typing an invalid colour must fall back to the stored one
         window.control("TextColor").setText("zzzzzz")
         assert window.result()["text_color"] == 0x000000
@@ -1935,6 +2461,713 @@ def plan_slides_leave_a_title_slide_without_section_alone():
         lo.close(doc)
 
 
+# --------------------------------------------------------------------------- #
+# the section-name box (*Section Titles*)
+# --------------------------------------------------------------------------- #
+
+
+def _section_boxes(doc):
+    """``[(page index, page name, [box, ...]), ...]`` for every slide of the deck."""
+    pages = doc.DrawPages
+    return [(index, str(pages.getByIndex(index).Name),
+             core.section_text_shapes(pages.getByIndex(index)))
+            for index in range(pages.Count)]
+
+
+def _style_is_none(value):
+    """Whether a ``FillStyle``/``LineStyle`` is ``NONE``.
+
+    pyuno hands an enum back as an object whose ``value`` is the *name* - ``NONE``,
+    not 0 - while a plain int is what an older office answers with, so both are
+    accepted here rather than the test guessing which one it got.
+    """
+    name = str(getattr(value, "value", value)).upper()
+    return name in ("NONE", "0")
+
+
+def _only_box(page):
+    """The one box a slide is supposed to carry; fails the test if there are others."""
+    boxes = core.section_text_shapes(page)
+    assert len(boxes) == 1, "expected one section box, found %d" % len(boxes)
+    return boxes[0]
+
+
+def _duplicate_page(doc, ctx, index):
+    """Duplicate slide ``index`` the way the menu does; returns the copy's index.
+
+    ``.uno:DuplicatePage`` is a dispatch and therefore asynchronous like the move
+    commands (fact 14), and it acts on the slide the *view* has selected, so the
+    controller is pointed at the source first and the page count is polled.  The
+    copy lands directly behind its source.
+    """
+    pages = doc.DrawPages
+    before = pages.Count
+    doc.CurrentController.setCurrentPage(pages.getByIndex(index))
+    core._dispatch(doc, ".uno:DuplicatePage", ctx)
+    if not lo.wait_until(lambda: pages.Count > before, timeout=10.0):
+        raise AssertionError("duplicating slide %d added nothing" % index)
+    return index + 1
+
+
+@test
+def section_titles_name_every_section_slide():
+    """Every slide of a section carries its section's name in a box of its own.
+
+    The command the request asks for: "add the name of the section to each slide".
+    The box has to be a plain text box rather than a placeholder, because a
+    placeholder is re-dealt and snapped back to the master by the layout (facts 21
+    and 53) and this box belongs where the settings put it.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        sections = core.get_sections(doc)
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["created"] == doc.DrawPages.Count, report
+        assert report["written"] == doc.DrawPages.Count, report
+        assert report["cleared"] == 0, report
+        assert [name for name in report["sections"]] == SECTION_NAMES, report
+
+        for index, _name, boxes in _section_boxes(doc):
+            assert len(boxes) == 1, "slide %d has %d boxes" % (index, len(boxes))
+            box = boxes[0]
+            page = doc.DrawPages.getByIndex(index)
+            assert str(box.getString()) == str(core.section_of(sections, index)), \
+                "slide %d says %r" % (index, box.getString())
+            assert str(box.Name).startswith(core.SECTION_TEXT_PREFIX), box.Name
+            assert str(box.Name) == core.section_text_name(index), box.Name
+            # the tail is the position, not a constant: two slides have to answer with
+            # two names, or a macro could not point at one box
+            assert str(box.Name).split(":")[-1] == str(index + 1), box.Name
+            assert box.supportsService("com.sun.star.drawing.TextShape"), box.ShapeType
+            # ... and it is a *plain* box: a presentation placeholder is snapped to the
+            # master and re-dealt by the layout (facts 21 and 53), which would move and
+            # restyle this box behind the command's back
+            assert str(box.ShapeType).endswith(".TextShape"), box.ShapeType
+            for service in tuple(core.CONTENT_SERVICES) + (
+                    "com.sun.star.presentation.TitleTextShape",):
+                assert not box.supportsService(service), \
+                    "the box is a %s placeholder: the layout will re-deal it" % service
+            # nothing of the slide's own look is inherited into a frame or a fill:
+            # the label is drawn over the slide, not on a plate
+            assert _style_is_none(box.getPropertyValue("FillStyle")), "the box is filled"
+            assert _style_is_none(box.getPropertyValue("LineStyle")), "the box is framed"
+            rect = core._box_rect_of(box)
+            assert rect[2] > 0 and rect[3] > 0, rect
+            # a shape from ``createInstance`` sits at 0,0 until it is told otherwise, so a
+            # box that begins there is one whose position was never written
+            assert rect[1] > 0, "the box was never moved to where it belongs: %r" % (
+                rect,)
+            slide_width = int(page.Width)
+            assert rect[0] >= 0 and rect[1] >= 0, rect
+            assert rect[0] + rect[2] <= slide_width + 100, \
+                "the box is wider than the slide: %r in %d" % (rect, slide_width)
+            # where it stands is the deck's own margin, not a number made up here
+            deck_body = [one for one in core._text_shapes(page)
+                         if core._is_content(one)]
+            if deck_body:
+                assert rect[0] == int(deck_body[0].Position.X), \
+                    "slide %d: the box is at x=%d, the deck's content box at %d" % (
+                        index, rect[0], deck_body[0].Position.X)
+            # the characters are on the paragraph too, or the page style wins
+            # (fact 52) and the box is drawn in the deck's body font at its size.
+            # Both asked by attribute, the way `core._master_char_height` asks: on a
+            # paragraph proxy `getPropertyValue` is the one spelling that answers
+            # ``AttributeError`` when the office is under load (fact 60)
+            paragraph = core._first_paragraph(box)
+            assert paragraph is not None, "the box has no paragraph to paint with"
+            shape_size = getattr(box, "CharHeight", None)
+            paragraph_size = getattr(paragraph, "CharHeight", None)
+            assert shape_size, "the box says nothing about its size: %r" % (shape_size,)
+            assert paragraph_size is not None, \
+                "the box's paragraph says nothing about its size: the label is drawn " \
+                "with the page style's characters, not the ones the command wrote"
+            assert paragraph_size == shape_size, \
+                "the shape says %s pt and its paragraph %s pt" % (
+                    shape_size, paragraph_size)
+    finally:
+        lo.close(doc)
+
+
+def _pdf_word_boxes(doc, name, number):
+    """``[(word, yMin, yMax)]`` of page ``number`` **as rendered**.
+
+    The same reason :func:`_pdf_page_texts` exists - only the output says what is
+    drawn - plus the coordinates: where two text shapes' *bands* overlap, one of
+    them is printed through the other, and no property on a shape can show that
+    because a presentation placeholder paints its text in the middle of a box that
+    is far taller than the line (fact 56).
+    """
+    folder = os.path.join(ROOT, "out", "tests-pdf")
+    os.makedirs(folder, exist_ok=True)
+    pdf = os.path.join(folder, "%s.pdf" % name)
+    if os.path.exists(pdf):
+        os.remove(pdf)
+    doc.storeToURL(uno.systemPathToFileUrl(pdf),
+                   (lo.pv("FilterName", "impress_pdf_Export"),))
+    result = subprocess.run(["pdftotext", "-bbox", "-f", str(number), "-l",
+                             str(number), pdf, "-"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise Skip("pdftotext failed: %s" % (result.stderr or "").strip()[:120])
+    page = re.search(r'<page width="([\d.]+)" height="([\d.]+)"', result.stdout)
+    if page is None:
+        raise Skip("pdftotext -bbox printed no page for %s" % pdf)
+    return ([(match.group(5), float(match.group(2)), float(match.group(4)))
+             for match in re.finditer(
+                 r'<word xMin="([\d.]+)" yMin="([\d.]+)" '
+                 r'xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)</word>', result.stdout)],
+            [float(page.group(1)), float(page.group(2))])
+
+
+@test
+def section_titles_are_painted_without_a_plate():
+    """No fill, no frame - and a plate that appeared is gone after the next run.
+
+    The office's own default is the reason the code says it: a ``TextShape`` from
+    ``createInstance`` answers ``FillStyle = SOLID`` and ``LineStyle = SOLID`` on a
+    document that has just been loaded, so a label that was not explicitly flattened is
+    drawn on a grey rectangle with a line round it (fact 88).  Impress is known to hand
+    a new shape the attributes of the last one created, but that cannot be *set* from
+    UNO reliably - both orders of writing a solid shape and then creating another answer
+    whatever the office feels like - so the promise is not left to the default: the two
+    writes are re-asserted on every run, and this is where that is checked.  The
+    re-run half is the deterministic one; the flatness of a freshly created box is the
+    same assertion at the moment of creation, where it is a bar and not a witness.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        for index, _name, boxes in _section_boxes(doc):
+            box = boxes[0]
+            assert _style_is_none(box.getPropertyValue("FillStyle")), \
+                "slide %d: the label is drawn on a fill" % index
+            assert _style_is_none(box.getPropertyValue("LineStyle")), \
+                "slide %d: the label is drawn inside a frame" % index
+
+        # a box that has picked a plate up - a duplicated slide, a template, somebody's
+        # edit, the office's own default - has to be flat again after the next run
+        dirty = _section_boxes(doc)[0][2][0]
+        dirty.setPropertyValue("FillStyle", 1)               # SOLID
+        dirty.setPropertyValue("LineStyle", 1)
+        assert not _style_is_none(dirty.getPropertyValue("FillStyle")), \
+            "a box cannot be given a fill here, so the re-run half proves nothing"
+        before = core._box_rect_of(dirty)
+
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        again = _section_boxes(doc)[0][2][0]
+        assert _style_is_none(again.getPropertyValue("FillStyle")), \
+            "the second run left the plate under the label"
+        assert _style_is_none(again.getPropertyValue("LineStyle")), \
+            "the second run left a frame round the label"
+        assert core._box_rect_of(again) == before, \
+            "flattening the box moved it: %r -> %r" % (before, core._box_rect_of(again))
+    finally:
+        lo.close(doc)
+
+
+@test
+def section_titles_do_not_print_through_the_heading():
+    """The label paints clear of the slide's own heading, and on the slide.
+
+    The box is a running head, so it has to sit *above* the letters the deck's title
+    placeholder paints - not above the top of its box.  Measured with
+    ``pdftotext -bbox`` on the fixture (`dev/render_section_titles.py` prints the
+    same numbers): the heading paints from 64.7 to 113.8 pt of the page and the
+    label from 11.5 to 47.2.  A box placed at the top of the title's *box*, or
+    between the heading and the content, lands its band across the heading's and
+    the two print on top of each other - which is exactly what the first version
+    of ``_section_box_rect`` did.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        # the sections are renamed first because the label is matched in the
+        # rendered text by its words: a deck whose heading *is* its section name
+        # ("Live Demo" under a section called "Demo") would otherwise have the
+        # heading's own word counted as the label
+        entries = core.get_sections(doc)
+        core.set_sections(doc, [("Section%d" % (number + 1), entry["indexes"])
+                                for number, entry in enumerate(entries)])
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        pages = doc.DrawPages
+        checked = 0
+        for index in range(pages.Count):
+            page = pages.getByIndex(index)
+            boxes = core.section_text_shapes(page)
+            if not boxes:
+                continue
+            label = str(boxes[0].getString())
+            title = core._title_shape(page)
+            heading = str(title.getString()).strip() if title is not None else ""
+            if not heading or heading == label:
+                continue          # nothing to collide with on this slide
+            words, size = _pdf_word_boxes(doc, "section-titles", index + 1)
+            painted = set(word for word, _top, _bottom in words)
+            assert label in painted, "slide %d: %r is not drawn at all" % (index, label)
+            assert heading.split()[0] in painted, \
+                "slide %d: the heading %r is not drawn" % (index, heading)
+            label_band = [(top, bottom) for word, top, bottom in words
+                          if word == label]
+            heading_band = [(top, bottom) for word, top, bottom in words
+                            if word == heading.split()[0]]
+            for top, bottom in label_band:
+                for head_top, head_bottom in heading_band:
+                    overlap = min(bottom, head_bottom) - max(top, head_top)
+                    assert overlap <= 1.0, \
+                        "slide %d: %r paints %s..%s through its own heading %r " \
+                        "%s..%s (by %.1f pt)" % (
+                            index, label, top, bottom, heading,
+                            head_top, head_bottom, overlap)
+                assert top >= 0 and bottom <= size[1] + 1.0, \
+                    "slide %d: the label paints off the slide at %s..%s" % (
+                        index, top, bottom)
+            checked += 1
+        assert checked >= 3, "only %d slides could be checked" % checked
+    finally:
+        lo.close(doc)
+
+
+@test
+def re_running_section_titles_updates_the_boxes_and_adds_none():
+    """A second run writes into the boxes it made; it never paints another one.
+
+    "similarly to the plan slides, re-trigger updates the content and do not create
+    new textboxes".  Recognition is by the name's prefix, which is why the prefix -
+    and not the whole name, whose tail is a page position that moves - is what
+    :func:`core._is_section_box` compares.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        before = [(index, [str(b.Name) for b in boxes])
+                  for index, _name, boxes in _section_boxes(doc)]
+        shapes = [doc.DrawPages.getByIndex(i).Count for i in range(doc.DrawPages.Count)]
+
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["created"] == 0, report
+        assert report["updated"] == doc.DrawPages.Count, report
+        after = [(index, [str(b.Name) for b in boxes])
+                 for index, _name, boxes in _section_boxes(doc)]
+        assert after == before, "a re-run changed the boxes: %r -> %r" % (before, after)
+        # the same *shapes*, not just the same names: a box that was removed and
+        # created again would look identical in the list above
+        assert [doc.DrawPages.getByIndex(i).Count for i in
+                range(doc.DrawPages.Count)] == shapes
+
+        # and the position the settings name is written to the boxes that already
+        # exist: a re-run has to move them, not leave them where the last run put
+        # them - which is the whole point of *Section size / position* being editable
+        moved = dict(config.DEFAULTS, section_x=4000, section_y=900,
+                     section_width=18000)
+        core.apply_section_titles(doc, moved, ctx)
+        for index, _name, boxes in _section_boxes(doc):
+            if not boxes:
+                continue
+            assert core._box_rect_of(boxes[0])[0] == 4000, \
+                "slide %d is still at %r, the settings say x=4000" % (
+                    index, core._box_rect_of(boxes[0]))
+            rect = core._box_rect_of(boxes[0])
+            assert rect[1] == 900, "slide %d: y is %d, the settings say 900" % (
+                index, rect[1])
+            assert rect[2] == 18000, "slide %d: the width is %d, not 18000" % (
+                index, rect[2])
+
+        # and it follows the sections it was given: rename one, run again
+        core.set_sections(doc, [(str(entry["name"]).upper(), entry["indexes"])
+                                for entry in core.get_sections(doc)])
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        sections = core.get_sections(doc)
+        for index, _name, boxes in _section_boxes(doc):
+            assert str(boxes[0].getString()) == str(core.section_of(sections, index)), \
+                "slide %d still says %r" % (index, boxes[0].getString())
+    finally:
+        lo.close(doc)
+
+
+@test
+def section_titles_survive_a_duplicated_slide():
+    """A duplicated slide's box is found and rewritten, not left beside a new one.
+
+    The case the request names: "ensure that the name of the section header is still
+    detected as such when a slide is duplicated".  A duplicated slide brings a copy
+    of every shape it had, **name included** - LibreOffice only appends a counter, so
+    ``PlanImpress:SectionText:Slide:1`` comes back as ``PlanImpress:SectionText:
+    Slide: 1`` - and a command that recognised its boxes by their exact name would
+    not see the copy and would paint a second box over it.  Recognising the prefix
+    instead is what makes the copy say the section it now belongs to.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        source = 1                       # "agenda-notes", in Introduction
+        copied = _duplicate_page(doc, ctx, source)
+
+        # the copy arrived wearing its source's box, name and all
+        boxes = core.section_text_shapes(doc.DrawPages.getByIndex(copied))
+        assert len(boxes) == 1, "the copy has %d boxes before the re-run" % len(boxes)
+        assert str(boxes[0].Name).startswith(core.SECTION_TEXT_PREFIX), boxes[0].Name
+        assert str(boxes[0].getString()) == SECTION_NAMES[0], \
+            "the copy still says what its source said: %r" % boxes[0].getString()
+
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["created"] == 0, \
+            "the copy's box was not recognised, so a second one was made: %r" % report
+        page = doc.DrawPages.getByIndex(copied)
+        assert len(core.section_text_shapes(page)) == 1, \
+            "the copy carries two boxes after the re-run"
+        sections = core.get_sections(doc)
+        wanted = str(core.section_of(sections, copied))
+        assert wanted, "the copy belongs to no section, so the test proves nothing"
+        assert str(_only_box(page).getString()) == wanted, \
+            "the copy says %r but belongs to %r" % (
+                _only_box(page).getString(), wanted)
+        assert str(_only_box(page).Name) == core.section_text_name(copied), \
+            "the copy's box is still named for its source"
+        # and every other slide is still right
+        for index, _name, boxes in _section_boxes(doc):
+            assert len(boxes) == 1, "slide %d carries %d boxes" % (index, len(boxes))
+            assert str(boxes[0].getString()) == str(core.section_of(sections, index)), \
+                "slide %d says %r" % (index, boxes[0].getString())
+    finally:
+        lo.close(doc)
+
+
+@test
+def section_titles_leave_a_slide_without_a_section_alone():
+    """No box before the first section - and none left behind when a slide leaves one.
+
+    "each slide except the firsts (without section)": a title slide that leads the
+    deck belongs to no section and gets nothing.  The other half matters as much:
+    a slide that *used* to be in a section keeps its box through a re-sectioning
+    unless the run takes it away, and a deck with a stale label on the cover is
+    worse than one with none.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.new_doc(desk, hidden=False)
+    try:
+        doc.DrawPages.getByIndex(0).Name = "title"
+        for name in ("welcome", "agenda-notes", "diagram", "questions"):
+            doc.DrawPages.insertNewByIndex(doc.DrawPages.Count).Name = name
+        core.set_sections(doc, [("Introduction", ["welcome", "agenda-notes"]),
+                                ("Demo", ["diagram", "questions"])])
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["skipped_outside"] == 1, report
+        assert report["written"] == 4, report
+        assert core.section_text_shapes(doc.DrawPages.getByIndex(0)) == [], \
+            "the cover slide got a section box"
+        for index in range(1, 5):
+            assert len(core.section_text_shapes(doc.DrawPages.getByIndex(index))) == 1, \
+                "slide %d has no box" % index
+
+        # the cover moves into the first section: it is now a section slide
+        core.set_sections(doc, [("Introduction", [0, 1, 2]), ("Demo", [3, 4])])
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["created"] == 1, report
+        assert str(_only_box(doc.DrawPages.getByIndex(0)).getString()) == "Introduction"
+
+        # ... and back out again: the box it no longer needs goes with the section
+        core.set_sections(doc, [("Introduction", [1, 2]), ("Demo", [3, 4])])
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["cleared"] == 1, report
+        assert core.section_text_shapes(doc.DrawPages.getByIndex(0)) == [], \
+            "a stale box is left on the slide that left its section"
+        assert doc.DrawPages.Count == 5, "the deck lost a slide"
+    finally:
+        lo.close(doc)
+
+
+@test
+def section_titles_are_not_drawn_on_the_plan_slides():
+    """A plan slide names its section in its heading, so it gets no box as well."""
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        core.insert_plan(doc, dict(config.DEFAULTS), ctx)
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["skipped_plan"] > 0, report
+        assert report["written"] == doc.DrawPages.Count - report["skipped_plan"], report
+        pages = doc.DrawPages
+        for index in range(pages.Count):
+            page = pages.getByIndex(index)
+            if core._is_plan_page(page):
+                assert core.section_text_shapes(page) == [], \
+                    "a plan slide carries a section box"
+        # a box that somehow ended up on a plan slide is taken away by the next run
+        plan = [pages.getByIndex(i) for i in range(pages.Count)
+                if core._is_plan_page(pages.getByIndex(i))][0]
+        stray = core._new_section_box(doc, plan, core.section_text_name(0))
+        assert stray is not None, "no box could be made to plant"
+        assert len(core.section_text_shapes(plan)) == 1
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["cleared"] >= 1, report
+        assert core.section_text_shapes(plan) == [], "the stray box survived"
+    finally:
+        lo.close(doc)
+
+
+@test
+def remove_section_titles_loses_nothing_of_the_deck():
+    """*Remove Section Titles* takes the boxes and nothing else.
+
+    The command has to be safe to run on a deck the user made: the slides they drew
+    keep every shape they had, and a deck with no boxes at all is left alone rather
+    than rewritten.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        def inventory():
+            pages = doc.DrawPages
+            return [(str(pages.getByIndex(i).Name),
+                     [str(pages.getByIndex(i).getByIndex(j).Name)
+                      for j in range(pages.getByIndex(i).Count)])
+                    for i in range(pages.Count)]
+
+        before = inventory()
+        assert core.remove_section_titles(doc) == 0, "there was nothing to remove"
+        assert inventory() == before, "removing nothing changed the deck"
+
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert sum(len(boxes) for _i, _n, boxes in _section_boxes(doc)) > 0
+        removed = core.remove_section_titles(doc)
+        assert removed == doc.DrawPages.Count, removed
+        assert sum(len(boxes) for _i, _n, boxes in _section_boxes(doc)) == 0
+        assert inventory() == before, "the deck is not what it was: %r" % inventory()
+    finally:
+        lo.close(doc)
+
+
+@test
+def section_titles_copy_the_first_slide_when_the_toggle_says_so():
+    """With *take the look from the first section slide*, one slide styles them all.
+
+    The toggle exists so the box can be styled where it is seen: restyle the label
+    on the first section slide in the editor, run the command, and every other slide
+    is redrawn to match it - font, size, colour and the rectangle.  Without it the
+    settings say and the deck's own body text fills in the blanks.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        settings = dict(config.DEFAULTS, section_follow_first=True)
+        core.apply_section_titles(doc, settings, ctx)
+        first = _only_box(doc.DrawPages.getByIndex(0))
+        # what the user does in the editor: a bigger serif label, moved up
+        first.CharHeight = 28
+        first.CharColor = 0xFF0000
+        first.CharFontName = "Liberation Serif"
+        first.Position = core._point(900, 1200)
+        wanted = core._box_rect_of(first)
+        look = core._read_look(first)
+
+        report = core.apply_section_titles(doc, settings, ctx)
+        assert report["look"] == "the first section slide's own box", report
+        for index, _name, boxes in _section_boxes(doc):
+            box = boxes[0]
+            assert core._box_rect_of(box) == wanted, \
+                "slide %d sits at %r, not at the first box's %r" % (
+                    index, core._box_rect_of(box), wanted)
+            other = core._read_look(box)
+            for attribute in ("CharHeight", "CharColor", "CharFontName"):
+                assert other.get(attribute) == look.get(attribute), \
+                    "slide %d: %s is %r, the first box says %r" % (
+                        index, attribute, other.get(attribute), look.get(attribute))
+
+        # with the toggle off, the settings win instead
+        settings = dict(settings, section_follow_first=False, section_size=14,
+                        section_color=0x00FF00, section_font="Liberation Mono")
+        report = core.apply_section_titles(doc, settings, ctx)
+        assert report["look"] == "the settings", report
+        for index, _name, boxes in _section_boxes(doc):
+            look = core._read_look(boxes[0])
+            assert abs(float(look["CharHeight"]) - 14.0) < 0.6, (index, look)
+            assert int(look["CharColor"]) & 0xFFFFFF == 0x00FF00, (index, look)
+            assert str(look["CharFontName"]) == "Liberation Mono", (index, look)
+    finally:
+        lo.close(doc)
+
+
+@test
+def the_section_commands_are_on_the_menu():
+    """Both commands are reachable from *Plan*, through the URL a click takes.
+
+    ``addons_registered`` reads the merged menu back out of the configuration, which
+    is the only proof that ``Addons.xcu`` was accepted at all (fact 6 fails
+    silently); this pins that the two new items are in the file, carry a URL, a
+    Title and ``Target=_self`` (fact 7), that each URL names a Job
+    ``handler.py`` really registers, and that each has an icon of its own (fact 8).
+    """
+    import xml.etree.ElementTree as ET
+    oor = "{http://openoffice.org/2001/registry}"
+    xcu = os.path.join(ROOT, "src", "Addons.xcu")
+    handler = os.path.join(ROOT, "src", "handler.py")
+    tree = ET.parse(xcu)
+    # the *elements* carry no prefix in this file, only the attributes do.  Only a
+    # node's **own** props count: the submenu node above the items has all of them
+    # as descendants, and taking those would pair one item's URL with the last
+    # item's Title - which is exactly what a first version of this test did.
+    by_url = {}
+    for node in tree.iter("node"):
+        props = dict((prop.get(oor + "name"), prop.find("value"))
+                     for prop in node.findall("prop"))
+        url = props.get("URL")
+        if url is not None and str(url.text or "").startswith(
+                "service:org.devsys.planimpress."):
+            by_url.setdefault(str(url.text), []).append(props)
+    wanted = ("service:org.devsys.planimpress.SectionTitles?section_titles",
+              "service:org.devsys.planimpress.RemoveSectionTitles"
+              "?remove_section_titles")
+    for url in wanted:
+        nodes = by_url.get(url) or []
+        assert nodes, "no menu item for %s: %s" % (url, sorted(by_url))
+        titled = [props for props in nodes if props.get("Title") is not None]
+        assert titled, "%s has no Title, so the menu would show a blank row" % url
+        assert str(titled[0]["Title"].text) in ("Section Titles",
+                                                "Remove Section Titles"), \
+            titled[0]["Title"].text
+        assert any(props.get("Target") is not None
+                   and str(props["Target"].text) == "_self" for props in nodes), \
+            "%s needs Target=_self (fact 7)" % url
+    source = open(handler).read()
+    for implementation in ("org.devsys.planimpress.SectionTitles",
+                           "org.devsys.planimpress.RemoveSectionTitles"):
+        assert implementation in source, "%s is not registered" % implementation
+    for command in ("do_section_titles", "do_remove_section_titles"):
+        assert "def %s" % command in source, "handler.py has no %s" % command
+    # the icons the menu asks for have to be in the package, or the item is blank
+    images = [str(value.text) for value in tree.iter("value")
+              if str(value.text or "").startswith("%origin%/icons/")]
+    for name in ("section_16.png", "section_26.png",
+                 "section_remove_16.png", "section_remove_26.png"):
+        assert any(image.endswith(name) for image in images), "no icon for %s" % name
+        assert os.path.exists(os.path.join(ROOT, "src", "icons", name)), \
+            "icons/%s was never generated" % name
+
+
+@test
+def the_section_fields_are_on_the_settings_dialog():
+    """The option screen can say everything the box can be told.
+
+    "in the option, adds new field for the font, color, size and coordinate of the
+    textbox" - plus the toggle that takes the look from the first slide.  The
+    geometry is checked here rather than in a screenshot because the point is which
+    fields exist, that they are laid out apart, and that the two that hold a number
+    say what unit they are in: a field called "X" that means centimetres while the
+    file stores 1/100 mm is how a label ends up off the slide.
+    """
+    from plan_impress import dialog
+    values = {"MutedColor": "B0B0B0", "TextColor": "000000", "Title": "Plan",
+              "master": "Default", "SectionColor": "1F4E79", "SectionFont": "Arial",
+              "SectionSize": "18", "SectionX": "1.4", "SectionY": "0.2",
+              "SectionWidth": "25.2", "SectionFollowFirst": True}
+    specs = dialog._field_specs(values, ["Default"], ["Liberation Sans", "Arial"])
+    by_name = {name: (service, dict(props)) for name, service, props in specs}
+    for expected in ("labelSectionColor", "SectionColor", "swatchSectionColor",
+                     "labelSectionFont", "SectionFont", "labelSectionSize",
+                     "SectionSize", "labelSectionX", "SectionX", "SectionY",
+                     "SectionWidth", "SectionFollowFirst"):
+        assert expected in by_name, (expected, sorted(by_name))
+    assert by_name["SectionFont"][0].endswith("UnoControlComboBoxModel"), \
+        "the font field has to be editable: any name can be typed"
+    assert by_name["SectionFont"][1]["StringItemList"] == ("Liberation Sans", "Arial")
+    assert by_name["SectionFont"][1]["Text"] == "Arial"
+    assert by_name["SectionColor"][1]["Text"] == "1F4E79"
+    assert by_name["swatchSectionColor"][1]["BackgroundColor"] == 0x1F4E79
+    assert by_name["SectionSize"][1]["Text"] == "18"
+    assert by_name["SectionFollowFirst"][0].endswith("UnoControlCheckBoxModel")
+    assert by_name["SectionFollowFirst"][1]["State"] == 1, "the toggle is not shown on"
+    # the number fields say what they hold
+    assert "cm" in by_name["labelSectionX"][1]["Label"].lower(), \
+        by_name["labelSectionX"][1]["Label"]
+    assert "pt" in by_name["labelSectionSize"][1]["Label"].lower(), \
+        by_name["labelSectionSize"][1]["Label"]
+    # laid out like the rest of the form: inside the window and apart from each other
+    spots = {}
+    for name, _service, props in specs:
+        props = dict(props)
+        assert props["Width"] > 0 and props["Height"] > 0, (name, props)
+        assert props["PositionX"] + props["Width"] <= dialog.DIALOG_WIDTH, \
+            "%s is drawn outside the window" % name
+        assert props["PositionY"] + props["Height"] <= dialog.DIALOG_HEIGHT, \
+            "%s is drawn below the window" % name
+        assert props.get("FontHeight", 12) >= dialog._FONT or name.startswith("swatch"),\
+            "%s shows words in the toolkit's own small font" % name
+        spots.setdefault((props["PositionX"], props["PositionY"]), []).append(name)
+    shared = {spot: names for spot, names in spots.items() if len(names) > 1}
+    assert not shared, "controls sharing a position: %s" % shared
+
+
+@test
+def the_position_fields_speak_centimetres_and_the_file_does_not():
+    """The fields are centimetres, the settings are 1/100 mm, and one line joins them.
+
+    Impress's own *Position and Size* dialog works in centimetres, which is what a
+    user reads off it and types in; ``core`` wants the 1/100 mm every geometry
+    property in the document model uses (fact 20).  Empty is not zero: it means
+    "where the deck's own content box is", so a half-typed or nonsense value must
+    not move the label to 0,0.
+    """
+    from plan_impress import dialog
+    assert dialog.cm_to_units("1.4") == 1400
+    assert dialog.cm_to_units("25,2") == 25200, "a comma is what a French keyboard types"
+    assert dialog.cm_to_units("0") == 0
+    assert dialog.cm_to_units("") is None
+    assert dialog.cm_to_units("   ") is None
+    assert dialog.cm_to_units(None) is None
+    assert dialog.cm_to_units("nonsense") is None
+    assert dialog.cm_to_units("-3") is None, "a negative box would be off the slide"
+    assert dialog.units_to_cm(1400) == "1.4"
+    assert dialog.units_to_cm(25200) == "25.2"
+    assert dialog.units_to_cm(200) == "0.2"
+    assert dialog.units_to_cm(None) == "", "unset has to read as an empty field"
+    assert dialog.point_text(0) == "" and dialog.point_text(None) == ""
+    assert dialog.point_text(18) == "18" and dialog.point_text(17.5) == "17.5"
+
+    stored = {"section_x": "1400", "section_y": -2, "section_z": 5,
+              "section_size": "nonsense", "section_width": 25200.6,
+              "section_font": "  Arial  ", "section_color": "zzz",
+              "section_follow_first": 1}
+    folder = os.path.join(ROOT, "out", "profile-section-coerce")
+    os.makedirs(folder, exist_ok=True)
+    fake_ctx = FakeContext(folder)
+    import json
+    with open(config.settings_path(fake_ctx), "w") as handle:
+        json.dump(stored, handle)
+    settings = config.load(fake_ctx)
+    assert settings["section_x"] == 1400, settings
+    assert settings["section_y"] is None, "a negative length is not a position"
+    assert settings["section_size"] == 0.0, "rubbish is the same as the deck's own"
+    assert settings["section_width"] == 25201, settings
+    assert settings["section_font"] == "Arial", settings
+    assert settings["section_color"] == config.DEFAULT_SECTION_COLOR, settings
+    assert settings["section_follow_first"] is True, settings
+    assert config.load(FakeContext(folder))["section_x"] == 1400
+
+    # the loader is the only guard: a hand-edited file can hold anything
+    with open(config.settings_path(fake_ctx), "w") as handle:
+        json.dump({"section_x": True, "section_y": "1.5", "section_size": -4,
+                   "section_width": -2.5, "section_follow_first": "yes"}, handle)
+    settings = config.load(fake_ctx)
+    assert settings["section_x"] is None, "a boolean is not a coordinate"
+    assert settings["section_y"] == 2, settings
+    assert settings["section_size"] == 0.0, settings
+    assert settings["section_width"] is None, "-2.5 in the file is not a width"
+    assert settings["section_follow_first"] is True, settings
+
+
 @test
 def dialog_ok_button_accepts_and_cancel_does_not():
     """Pressing OK must not turn into a silent cancel.
@@ -1960,10 +3193,11 @@ def dialog_ok_button_accepts_and_cancel_does_not():
                      for _control, listener in window._listeners
                      if hasattr(listener, "name")}
         # ... plus one swatch listener per colour row: clicking the swatch is
-        # how the palette picker is opened
+        # how the palette picker is opened.  There are three colour rows now - the
+        # two the plan slides use and the section box's - so the count says it.
         assert set(listeners) == {"ok", "cancel", "swatch:MutedColor",
-                                  "swatch:TextColor"}, listeners
-        assert len(window._listeners) == 6, window._listeners
+                                  "swatch:TextColor", "swatch:SectionColor"}, listeners
+        assert len(window._listeners) == 8, window._listeners
         junk = object()              # no Source, no Model: the listener must not care
         # pressing a swatch opens another window; it must not answer the dialog
         from plan_impress import picker as picker_module
@@ -2254,6 +3488,11 @@ def addons_registered():
                      "service:org.devsys.planimpress.InsertPlan?insert",
                      "service:org.devsys.planimpress.Settings?settings",
                      "service:org.devsys.planimpress.RemovePlan?remove",
+                     "service:org.devsys.planimpress.SectionTitles?section_titles",
+                     "service:org.devsys.planimpress.RemoveSectionTitles"
+                     "?remove_section_titles",
+                     "Section Titles", "Remove Section Titles",
+                     "icons/section_16.png", "icons/section_remove_26.png",
                      "private:separator", "Plan", "icons/plan_16.png"):
         assert expected in joined, "missing from Addons.xcu: %s" % expected
 
@@ -2274,6 +3513,36 @@ def menu_dispatch_inserts_slides():
         names = core.page_names(doc)
         assert len(names) == len(before) + 4, names
         assert names[0] == core.OVERVIEW_NAME, names
+    finally:
+        lo.close(doc)
+
+
+@test
+def menu_dispatch_writes_section_titles():
+    """The path a *Section Titles* click takes, through the installed extension.
+
+    Registering the Job under a second implementation name is the kind of thing that
+    can go wrong in silence - a menu item that looks right and does nothing - so this
+    dispatches the URL the menu carries and waits for the boxes to appear.
+    """
+    ctx = lo.connect()
+    if not _extension_installed(ctx):
+        raise Skip("extension not installed (make install)")
+    desk = lo.desktop(ctx)
+    doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    try:
+        assert core.remove_section_titles(doc) == 0, "the deck was not clean"
+        lo.dispatch(doc, SECTION_SERVICE)
+        pages = doc.DrawPages
+        found = lo.wait_until(
+            lambda: sum(len(core.section_text_shapes(pages.getByIndex(i)))
+                        for i in range(pages.Count)) > 0)
+        assert found, "dispatching %s drew nothing" % SECTION_SERVICE
+        sections = core.get_sections(doc)
+        for index in range(pages.Count):
+            boxes = core.section_text_shapes(pages.getByIndex(index))
+            assert len(boxes) == 1, "slide %d has %d boxes" % (index, len(boxes))
+            assert str(boxes[0].getString()) == str(core.section_of(sections, index))
     finally:
         lo.close(doc)
 

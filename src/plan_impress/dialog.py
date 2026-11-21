@@ -32,7 +32,7 @@ import traceback
 
 import uno
 
-from plan_impress import config
+from plan_impress import config, core, swatch
 
 TITLE = "Plan Impress"
 
@@ -65,13 +65,24 @@ def _parent_window(ctx):
 
 #: Our own message box, in dialog units (fact 28: one unit is about 2.5 px).
 _BOX_MARGIN = 10
-_BOX_TEXT_W = 110                  # ~275 px of text before a line is wrapped
+_BOX_TEXT_W = 120                  # 304 px of text before a line is wrapped
 _BOX_LINE_H = 9                    # one line of _FONT text, with air
 _BOX_BUTTON_W = 26
 _BOX_BUTTON_H = 18
 _BOX_BUTTON_GAP = 4
 _BOX_GAP = 10                      # between the text and the buttons
-_BOX_CHARS = 44                    # characters per line at _FONT
+_BOX_CHARS = 36                    # characters per line at _FONT, see below
+
+#: How wide one character of the box's font is, in px, as ``dev/probe_message_width.py``
+#: photographs it: the log path the debug box prints is 240 px over its 30 first
+#: characters (7.8 px a character - a path is lower case, digits, dots and slashes) and
+#: 296 px over 38.  A ``FixedText`` neither wraps nor aligns (fact 72), so a line longer
+#: than its box is not wrapped, it is painted past the edge and disappears: the report
+#: "the debug log enable/disable window message has not enough width, the message is cut
+#: (incomplete path)" was ``_BOX_CHARS`` at 44 - 344 px of words in a 278 px label - and
+#: nothing in the API says so, because a peer has no text metrics (fact 46).  The width
+#: is the measured ink of ``_BOX_CHARS`` characters plus room for a wider glyph.
+_BOX_CHAR_W = 7.8
 
 #: com.sun.star.awt.KeyCodes, spelled out because importing ``KeyCodes`` at the top
 #: of the module is what makes extension registration fail (fact 3).
@@ -339,6 +350,27 @@ _ROWS = (
     ("Master", "Master slide:"),
 )
 
+#: The rows *Section Titles* contributes, in the same ``(name, label, kind)``
+#: shape.  Everything here is optional in the same sense as the master slide
+#: setting: an empty field means "ask the deck", which is what a deck nobody has
+#: styled gets.
+#:
+#: ``position`` is one row with three fields - X, Y and the width, in centimetres,
+#: the unit Impress's own *Position and Size* dialog uses; the settings file keeps
+#: 1/100 mm, which is what every geometry property in :mod:`plan_impress.core`
+#: wants, and one line of conversion (`cm_to_units`) joins the two.
+#: ``check`` is a check box, which carries its own label and so has no separate one.
+_SECTION_ROWS = (
+    ("SectionColor", "Section colour (hex):", "colour"),
+    ("SectionFont", "Section font:", "font"),
+    ("SectionSize", "Section size (pt):", "text"),
+    ("SectionPosition", "Position and size (cm):", "position"),
+    ("SectionFollowFirst", "Take the look from the first section slide", "check"),
+)
+
+#: The three fields of the position row: ``(setting, what it is called on screen)``.
+_POSITION_FIELDS = (("SectionX", "X"), ("SectionY", "Y"), ("SectionWidth", "W"))
+
 # --------------------------------------------------------------------------- #
 # geometry
 # --------------------------------------------------------------------------- #
@@ -355,7 +387,13 @@ _LABEL_W = 80
 _FIELD_X = _LABEL_X + _LABEL_W + 4
 _FIELD_W = 46
 _SWATCH_X = _FIELD_X + _FIELD_W + 4
-_SWATCH_W = 22
+#: The colour beside a hex field is **the same square** as one of the chooser's grid,
+#: sized by the same rule: a dialog unit is 2.53 x 2.39 px (fact 28), so a control is
+#: square on the screen only at ``w`` x :func:`swatch.square_units` (this used to be
+#: 22 x 12 units - 56 x 29 px, a strip rather than the swatch the comment promised:
+#: "the color sample must be exact squares, not rectangles").
+_SWATCH_W = 13
+_SWATCH_H = swatch.square_units(_SWATCH_W)
 _FIRST_ROW_Y = 12
 _ROW_GAP = 9                     # clear space between one row and the next
 _LABEL_H = 10
@@ -365,33 +403,108 @@ _LABEL_OFFSET = 2                # label sits slightly below the field's top
 _BUTTON_W = 34
 _BUTTON_H = 18
 _BUTTON_GAP = 4
-DIALOG_WIDTH = _SWATCH_X + _SWATCH_W + _MARGIN
-_BUTTON_Y = _FIRST_ROW_Y + len(_ROWS) * _ROW_STEP + _ROW_GAP
+#: The position row's three fields (X, Y and the width, in centimetres) and the
+#: letter in front of each.  They share one row because they are one decision -
+#: where the box goes - and because the alternative is three more rows in a dialog
+#: that is already nine rows tall.
+_NUM_W = 20
+_NUM_LABEL_W = 7
+_NUM_GAP = 3
+_POSITION_END = (_FIELD_X + len(_POSITION_FIELDS) * (_NUM_LABEL_W + _NUM_W)
+                 + (len(_POSITION_FIELDS) - 1) * _NUM_GAP)
+DIALOG_WIDTH = max(_SWATCH_X + _SWATCH_W, _POSITION_END) + _MARGIN
+_BUTTON_Y = _FIRST_ROW_Y + (len(_ROWS) + len(_SECTION_ROWS)) * _ROW_STEP + _ROW_GAP
 DIALOG_HEIGHT = _BUTTON_Y + _BUTTON_H + _MARGIN
 _OK_X = DIALOG_WIDTH - 2 * _BUTTON_W - _BUTTON_GAP - _MARGIN
 _CANCEL_X = _OK_X + _BUTTON_W + _BUTTON_GAP
 _FONT = 12
-_COLOUR_FIELDS = ("MutedColor", "TextColor")
+_COLOUR_FIELDS = ("MutedColor", "TextColor", "SectionColor")
+#: Which setting each colour field edits - the picker needs it to remember the
+#: colour and to know what to show when it opens.
+_COLOUR_SETTINGS = {"MutedColor": "muted_color", "TextColor": "text_color",
+                    "SectionColor": "section_color"}
 _POS = 1                     # com.sun.star.awt.PosSize.POS
 
-#: ``com.sun.star.awt.BorderStyle.LINE``: the border that paints a **solid line**
-#: around a control, and the only spelling a colour should ever be shown with.  A
-#: colour used to be painted on a *button*, which is the obvious control for a
+#: What a colour is painted **on**.  It used to be a button - the obvious control for a
 #: colour one clicks - and the office then paints the button with its theme's raised
 #: bevel, dark above and to the left and light below and to the right: the
-#: "perspective-style border around the color" that was reported, in the palette and
-#: in this dialog alike.  A button model has no ``Border``/``BorderColor`` at all to
-#: switch it off with (fact 65).  ``UnoControlFixedTextModel`` has both, paints
-#: ``BackgroundColor`` flat and draws the line in one colour on all four sides; its
-#: ``BorderColor`` is accepted and then ignored, the line is the theme's own
-#: (``dev/probe_swatch_look.py``, fact 77).  A label has no action source, so a click
-#: on a colour arrives as ``mouseReleased``.
-BORDER_LINE = 2
+#: "perspective-style border around the color" that was reported, in the palette and in
+#: this dialog alike.  A button model has no ``Border``/``BorderColor`` at all to switch
+#: it off with (fact 65).  A label paints a colour flat and can be given a line, but
+#: only the theme's own: every ``BorderStyle`` from 0 to 6 paints ``#2B2E39`` on this
+#: dark theme and ``BorderColor`` is accepted and ignored in all of them
+#: (``dev/probe_border_colour.py``), so a dark colour had no edge to see.  What is
+#: painted is therefore an image control carrying a bitmap :mod:`plan_impress.swatch`
+#: draws - the colour inside a one-pixel line of the contrast colour, as the office's own
+#: line-colour dropdown draws its swatches - and the line is *ours* because it is drawn,
+#: not asked for.  Neither kind has an action source, so a click on a colour arrives as
+#: ``mouseReleased`` (fact 79).
+_IMAGE = "com.sun.star.awt.UnoControlImageControlModel"
 
 _FIXED_TEXT = "com.sun.star.awt.UnoControlFixedTextModel"
 _EDIT = "com.sun.star.awt.UnoControlEditModel"
 _LISTBOX = "com.sun.star.awt.UnoControlListBoxModel"
 _BUTTON = "com.sun.star.awt.UnoControlButtonModel"
+#: The font field is an **editable** combo, not a list: the user has to be able to
+#: type a name the list does not carry, and the field is empty for "the deck's own".
+#: Both of these model services come out of the dialog model's own factory, unlike
+#: the panel and the message box (fact 65) - ``dev/probe_fonts.py`` prints which
+#: properties each has.
+_COMBOBOX = "com.sun.star.awt.UnoControlComboBoxModel"
+_CHECKBOX = "com.sun.star.awt.UnoControlCheckBoxModel"
+
+
+def font_names(descriptors):
+    """The family names of ``awt.FontDescriptor`` structs, sorted, no duplicates.
+
+    The office reports one descriptor **per face**, so 4701 of them here come down to
+    2835 families; a dropdown of styles would be unreadable.
+    """
+    names, seen = [], set()
+    for descriptor in descriptors or ():
+        try:
+            name = str(descriptor.Name)
+        except Exception:
+            continue
+        if name and name not in seen:
+            seen.add(name)
+            names.append(name)
+    names.sort(key=str.lower)
+    return names
+
+
+def installed_fonts(ctx):
+    """The font families the office can paint with, or ``[]``.
+
+    There is no font-list *service* to ask - ``com.sun.star.awt.Toolkit`` has no
+    ``getDeviceFontEnumeration`` and a frame's container window has no peer at all
+    (``dev/probe_fonts.py`` prints what each of the plausible routes answers) - but
+    **a window peer** answers ``getFontDescriptors()`` with one
+    ``com.sun.star.awt.FontDescriptor`` per face.  The settings dialog reads them
+    from its *own* peer (:meth:`SettingsDialog._fill_fonts`); this is the route for
+    a caller that has no window, and it is the one that must not be used while a
+    menu popup is on screen - a second top-level peer then wedges the client.
+    """
+    dialog = None
+    try:
+        toolkit = _toolkit(ctx)
+        manager = ctx.ServiceManager
+        dialog = manager.createInstanceWithContext(
+            "com.sun.star.awt.UnoControlDialog", ctx)
+        model = manager.createInstanceWithContext(
+            "com.sun.star.awt.UnoControlDialogModel", ctx)
+        dialog.setModel(model)
+        dialog.createPeer(toolkit, None)
+        descriptors = dialog.getPeer().getFontDescriptors()
+    except Exception:
+        return []
+    finally:
+        if dialog is not None:
+            try:
+                dialog.dispose()
+            except Exception:
+                pass
+    return font_names(descriptors)
 
 
 def _master_index(values, masters):
@@ -400,7 +513,59 @@ def _master_index(values, masters):
     return masters.index(wanted) if wanted in masters else 0
 
 
-def _field_specs(values, masters):
+def cm_to_units(text):
+    """What the field says in centimetres, as the 1/100 mm ``core`` works in.
+
+    ``None`` for empty, rubbish and a negative number, all of which mean "ask the
+    deck" - the same thing an empty master-slide field means, and the reason a
+    half-typed value must not put the box at 0,0.
+    """
+    text = str(text or "").strip().replace(",", ".")
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if value != value or value < 0:       # NaN or a negative length
+        return None
+    return int(round(value * 1000.0))
+
+
+def units_to_cm(value):
+    """One of those lengths, back into the field.  ``""`` = the deck's own."""
+    length = core.config_length(value)
+    if length is None:
+        return ""
+    return ("%.2f" % (length / 1000.0)).rstrip("0").rstrip(".")
+
+
+def point_text(value):
+    """A point size for its field; ``""`` means "the size the deck paints with"."""
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if size != size or size <= 0:
+        return ""
+    return ("%.1f" % size).rstrip("0").rstrip(".")
+
+
+def _hex_value(value, fallback):
+    """A colour for a hex field, with the default standing in for a missing one.
+
+    ``config.load`` guarantees a number, but the dialog is also built by the tests
+    from a hand-made dict, and a section box whose colour is unset is a normal case.
+    """
+    if value is None:
+        value = fallback
+    try:
+        return config.color_to_hex(int(value))
+    except (TypeError, ValueError):
+        return config.color_to_hex(fallback)
+
+
+def _field_specs(values, masters, fonts=None):
     """The control description as ``(name, model service, properties)`` triples.
 
     Kept separate from UNO object creation so the tests can assert on the
@@ -408,13 +573,36 @@ def _field_specs(values, masters):
     without a display.
     """
     specs = []
-    for index, (name, label) in enumerate(_ROWS):
-        y = _FIRST_ROW_Y + index * _ROW_STEP
+
+    def label(name, text, y):
         specs.append(("label" + name, _FIXED_TEXT, [
-            ("Label", label), ("PositionX", _LABEL_X),
+            ("Label", text), ("PositionX", _LABEL_X),
             ("PositionY", y + _LABEL_OFFSET),
             ("Width", _LABEL_W), ("Height", _LABEL_H), ("FontHeight", _FONT),
         ]))
+
+    def field(name, service, props, y, width=_FIELD_W):
+        specs.append((name, service, props + [
+            ("PositionX", _FIELD_X), ("PositionY", y), ("Width", width),
+            ("Height", _FIELD_H), ("FontHeight", _FONT),
+        ]))
+
+    def swatch_of(name, y, colour):
+        # the same square as one of the picker's grid, drawn the same way: the
+        # colour inside a line of the contrast colour, which is what the report
+        # asked for ("see the office's own palette"), and clicking it opens the
+        # palette picker either way - the way the arrow opens the font-colour
+        # dropdown.  The bitmap itself is given by _refresh_swatch, which is the
+        # half that needs the office; this half stays a description.
+        specs.append(("swatch" + name, _IMAGE, [
+            ("PositionX", _SWATCH_X), ("PositionY", y - (_SWATCH_H - _FIELD_H) // 2),
+            ("Width", _SWATCH_W), ("Height", _SWATCH_H),
+            ("HelpText", "Pick a colour from a palette"),
+        ] + swatch.swatch_props(colour)))
+
+    for index, (name, text) in enumerate(_ROWS):
+        y = _FIRST_ROW_Y + index * _ROW_STEP
+        label(name, text, y)
         if name == "Master":
             service = _LISTBOX
             props = [("StringItemList", tuple(masters)), ("Dropdown", True),
@@ -428,22 +616,61 @@ def _field_specs(values, masters):
             # No MaxLen: the container's own model service has none, so a hex
             # field is not capped here - result() validates instead.
             props = [("Text", values[name])]
-        specs.append((name, service, props + [
-            ("PositionX", _FIELD_X), ("PositionY", y), ("Width", _FIELD_W),
-            ("Height", _FIELD_H), ("FontHeight", _FONT),
-        ]))
+        field(name, service, props, y)
         if name in _COLOUR_FIELDS:
-            # a label with a solid line, not a button: the button shows the colour
-            # with the theme's bevel around it (see BORDER_LINE), and clicking the
-            # swatch is what opens the palette picker either way - the way the arrow
-            # opens the font-colour dropdown.
-            specs.append(("swatch" + name, _FIXED_TEXT, [
-                ("Label", " "), ("PositionX", _SWATCH_X), ("PositionY", y),
-                ("Width", _SWATCH_W), ("Height", _FIELD_H),
-                ("BackgroundColor", config.hex_to_color(values[name], 0)),
-                ("Border", BORDER_LINE),
-                ("HelpText", "Pick a colour from a palette"),
+            swatch_of(name, y, config.hex_to_color(values[name], 0))
+
+    for index, (name, text, kind) in enumerate(_SECTION_ROWS):
+        y = _FIRST_ROW_Y + (len(_ROWS) + index) * _ROW_STEP
+        if kind == "check":
+            # a check box carries its own words, so it gets no label beside it
+            specs.append((name, _CHECKBOX, [
+                ("Label", text), ("PositionX", _LABEL_X), ("PositionY", y),
+                ("Width", DIALOG_WIDTH - 2 * _MARGIN), ("Height", _FIELD_H),
+                ("FontHeight", _FONT),
+                ("State", 1 if values.get(name) else 0),
             ]))
+            continue
+        if kind != "position":
+            label(name, text, y)
+        if kind == "colour":
+            field(name, _EDIT, [("Text", values.get(name, ""))], y)
+            swatch_of(name, y, config.hex_to_color(values.get(name, ""), 0))
+        elif kind == "font":
+            # an editable combo: the office's own font list when the office will
+            # say it (``installed_fonts``, fact 62's "the API is not there to be
+            # asked" applies to a *font picker*, not to the list), and any name
+            # typed into the box otherwise - which is what an empty setting means
+            field(name, _COMBOBOX, [
+                ("StringItemList", tuple(fonts or ())), ("Dropdown", True),
+                ("Text", str(values.get(name) or "")),
+                ("HelpText", "Leave empty for the font the deck's body text uses"),
+            ], y)
+        elif kind == "text":
+            field(name, _EDIT, [
+                ("Text", str(values.get(name, ""))),
+                ("HelpText", "Leave empty for the size the deck's body text uses"),
+            ], y)
+        else:                                        # the three position fields
+            # the row's caption is named after the *first* of its three fields, so
+            # the rule "every label has a field beside it" stays checkable
+            label(_POSITION_FIELDS[0][0], text, y)
+            x = _FIELD_X
+            for which, caption in _POSITION_FIELDS:
+                specs.append(("caption" + which, _FIXED_TEXT, [
+                    ("Label", caption), ("PositionX", x),
+                    ("PositionY", y + _LABEL_OFFSET), ("Width", _NUM_LABEL_W),
+                    ("Height", _LABEL_H), ("FontHeight", _FONT),
+                ]))
+                specs.append((which, _EDIT, [
+                    ("Text", str(values.get(which, ""))),
+                    ("HelpText", "In centimetres; empty = where the deck's own "
+                                 "content box is"),
+                    ("PositionX", x + _NUM_LABEL_W), ("PositionY", y),
+                    ("Width", _NUM_W), ("Height", _FIELD_H), ("FontHeight", _FONT),
+                ]))
+                x += _NUM_LABEL_W + _NUM_W + _NUM_GAP
+
     specs.append(("ok", _BUTTON, [
         ("Label", "OK"), ("PositionX", _OK_X), ("PositionY", _BUTTON_Y),
         ("Width", _BUTTON_W), ("Height", _BUTTON_H), ("FontHeight", _FONT),
@@ -511,7 +738,7 @@ def centre(dialog, ctx):
 class SettingsDialog(object):
     """Modal settings editor: hex colours, heading text, master slide."""
 
-    def __init__(self, ctx, settings, masters):
+    def __init__(self, ctx, settings, masters, fonts=None):
         self.ctx = ctx
         self.settings = dict(settings)
         self.masters = [str(m) for m in masters] or [""]
@@ -520,6 +747,17 @@ class SettingsDialog(object):
             "TextColor": config.color_to_hex(settings["text_color"]),
             "Title": settings["title"],
             "master": settings["master"],
+            # the section box: every one of these may be empty, and empty means
+            # "the deck's own", which is what keeps a generated box looking like
+            # the deck it was generated into
+            "SectionColor": _hex_value(settings.get("section_color"),
+                                       config.DEFAULT_SECTION_COLOR),
+            "SectionFont": settings.get("section_font") or "",
+            "SectionSize": point_text(settings.get("section_size")),
+            "SectionX": units_to_cm(settings.get("section_x")),
+            "SectionY": units_to_cm(settings.get("section_y")),
+            "SectionWidth": units_to_cm(settings.get("section_width")),
+            "SectionFollowFirst": bool(settings.get("section_follow_first")),
         }
         self.dialog = None
         self.model = None
@@ -528,6 +766,17 @@ class SettingsDialog(object):
         self.rejected = False
         self._listeners = []
         self._warnings = []
+        #: The names for the font combo, read from the office the first time the
+        #: dialog is built (:func:`installed_fonts`); a caller may hand its own list.
+        self._fonts = list(fonts) if fonts is not None else None
+        #: Whether the office's theme is dark, which decides the colour of the line
+        #: drawn round the two swatches (:func:`plan_impress.swatch.ring_colour`).
+        self._dark = swatch.theme_is_dark(ctx)
+
+    @property
+    def fonts(self):
+        """The names the font dropdown offers; empty until the peers exist."""
+        return list(self._fonts or [])
 
     @property
     def warnings(self):
@@ -567,10 +816,15 @@ class SettingsDialog(object):
                 self.model.setPropertyValue(property_name, value)
             except Exception as error:
                 self._warnings.append("dialog.%s: %s" % (property_name, error))
-        for name, service, props in _field_specs(self.values, self.masters):
+        for name, service, props in _field_specs(self.values, self.masters,
+                                                 self._fonts):
             control_model = self._new_control_model(service)
             _apply(control_model, props, self._warnings, name)
             self.model.insertByName(name, control_model)
+        # the swatches are *drawn*, not coloured, so they want their bitmap as soon as
+        # they exist: the specs describe the control, and the office makes the picture
+        for field in _COLOUR_FIELDS:
+            self._refresh_swatch(field)
         return self.dialog
 
     def control(self, name):
@@ -587,6 +841,38 @@ class SettingsDialog(object):
         except Exception:
             self.dialog.createPeer(toolkit, _parent_window(self.ctx))
         self._centre()
+        self._fill_fonts()
+
+    def _fill_fonts(self):
+        """Give the font dropdown the office's own list, from **this** dialog's peer.
+
+        The names can only be asked of a window peer (:func:`installed_fonts` says
+        what the other routes answer), and a control's geometry is frozen once its
+        peer exists (fact 70) - but its *words* are not: writing ``StringItemList``
+        afterwards reaches the control and the value typed into the box survives,
+        which ``dev/probe_font_items.py`` measures as itemCount 0 → 3.
+
+        Creating a peer of one's own to ask is the wrong answer here: while a menu
+        popup holds the pointer grab, a second top-level window wedges the client
+        and nothing at all comes back - which is how the settings dialog came to
+        hang before it was ever shown.
+        """
+        if self._fonts is not None:
+            return                      # the caller said what to offer
+        try:
+            descriptors = self.dialog.getPeer().getFontDescriptors()
+        except Exception:
+            self._fonts = []
+            return
+        self._fonts = font_names(descriptors)
+        if not self._fonts:
+            return
+        try:
+            self.control_model("SectionFont").setPropertyValue(
+                "StringItemList", uno.Any("[]string", tuple(self._fonts)))
+        except Exception:
+            return
+        self._repaint("SectionFont")
 
     def _centre(self):
         centre(self.dialog, self.ctx)
@@ -625,7 +911,7 @@ class SettingsDialog(object):
         # that boundary, so a broken picker looks exactly like a dead swatch.
         from plan_impress import palettes, picker
         # the field is named after the setting it edits, minus the underscore
-        setting = {"MutedColor": "muted_color", "TextColor": "text_color"}[name]
+        setting = _COLOUR_SETTINGS[name]
         try:
             current = config.hex_to_color(self._text(name),
                                           self.settings.get(setting, 0))
@@ -660,9 +946,59 @@ class SettingsDialog(object):
         config.remember_colour(self.settings, chosen)
 
     def _refresh_swatch(self, name):
+        """Put what the field says on its swatch: the colour, and the line round it.
+
+        Both halves are written.  ``BackgroundColor`` is the colour underneath - and the
+        whole of what shows when no bitmap can be made - while ``Graphic`` is the
+        bitmap painted over it, which is where the contrast line lives
+        (:mod:`plan_impress.swatch`).  A control takes a new bitmap after its peer
+        exists (``dev/probe_swatch_ring.py`` photographs the change), so typing a hex
+        value moves the swatch with it; the peer then has to be told
+        (:meth:`_repaint`), because a model written silently is not a model painted.
+        """
+        text = None
         try:
-            color = config.hex_to_color(self.control(name).getText(), 0)
-            self.control_model("swatch" + name).setPropertyValue("BackgroundColor", color)
+            text = self.control(name).getText()      # what is in the field right now
+        except Exception:
+            pass
+        if text is None:
+            text = self.values.get(name, "000000")   # before the peers exist: the value
+        try:
+            colour = config.hex_to_color(text, 0)
+        except Exception:
+            return
+        try:
+            model = self.control_model("swatch" + name)
+        except Exception:
+            return
+        if model is None:
+            return
+        try:
+            model.setPropertyValue("BackgroundColor", colour)
+            model.setPropertyValue("Tag", config.color_to_hex(colour))
+        except Exception:
+            pass
+        width, height = swatch.bitmap_size(_SWATCH_W, _SWATCH_H)
+        made = swatch.graphic(self.ctx, colour, width, height,
+                              swatch.ring_colour(colour, self._dark))
+        if made is not None:
+            try:
+                model.setPropertyValue("Graphic", made)
+            except Exception:
+                pass
+        self._repaint("swatch" + name)
+
+    def _repaint(self, name):
+        """Tell one control's peer that its model no longer says what it painted.
+
+        Writing a model property does not by itself repaint anything: the picker's
+        read-out kept the colour the dialog was opened with however often the pointer
+        moved, until the control's *own* peer was invalidated with ``3`` (``ALL``) -
+        fact 75.  A swatch that keeps showing the old colour while the field beside it
+        says another is a lie about the setting that is about to be saved.
+        """
+        try:
+            self.control(name).getPeer().invalidate(3)
         except Exception:
             pass
 
@@ -792,6 +1128,50 @@ class SettingsDialog(object):
         except Exception:
             return str(self.control_model(name).getPropertyValue("Text"))
 
+    def _number(self, name, fallback):
+        """A point size typed into a field, or ``fallback`` when it says nothing.
+
+        Empty is not rubbish: it means "the size the deck's body text uses", and
+        ``config.load`` clamps what comes back.
+        """
+        try:
+            text = str(self._text(name)).strip().replace(",", ".")
+        except Exception:
+            return fallback
+        if not text:
+            return 0.0
+        try:
+            value = float(text)
+        except ValueError:
+            return fallback
+        return value if 0.0 <= value <= 400.0 else fallback
+
+    def _length(self, name, fallback):
+        """A centimetre field as the 1/100 mm ``core`` works in, or ``None``.
+
+        Empty says "where the deck's own content box is"; rubbish keeps the value
+        that was there, the way a half-typed hex value keeps its colour instead of
+        losing it.
+        """
+        try:
+            text = str(self._text(name)).strip()
+        except Exception:
+            return fallback
+        if not text:
+            return None
+        value = cm_to_units(text)
+        return value if value is not None else fallback
+
+    def _checked(self, name, fallback):
+        """Whether a check box is on; the model is the fallback, as everywhere."""
+        for getter in (lambda: self.control(name).getState(),
+                       lambda: self.control_model(name).getPropertyValue("State")):
+            try:
+                return bool(getter())
+            except Exception:
+                continue
+        return bool(fallback)
+
     def result(self):
         """Read the control values back into a settings dict."""
         if self.dialog is None:
@@ -814,6 +1194,17 @@ class SettingsDialog(object):
                                               self.settings["text_color"]),
             "title": self._text("Title").strip() or "Plan",
             "master": master,
+            "section_color": config.hex_to_color(
+                self._text("SectionColor"), self.settings.get("section_color")),
+            "section_font": self._text("SectionFont").strip(),
+            "section_size": self._number("SectionSize",
+                                         self.settings.get("section_size")),
+            "section_x": self._length("SectionX", self.settings.get("section_x")),
+            "section_y": self._length("SectionY", self.settings.get("section_y")),
+            "section_width": self._length("SectionWidth",
+                                          self.settings.get("section_width")),
+            "section_follow_first": self._checked(
+                "SectionFollowFirst", self.settings.get("section_follow_first")),
         }
 
     def dispose(self):

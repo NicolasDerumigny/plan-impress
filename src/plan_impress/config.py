@@ -21,6 +21,33 @@ DEFAULT_MASTER = ""
 #: How many colours the picker remembers as "Recently used".
 RECENT_LIMIT = 14
 
+# --------------------------------------------------------------------------- #
+# the section-name box (the *Section Titles* command)
+# --------------------------------------------------------------------------- #
+#
+# The box is drawn on slides the user made, so everything about it is a matter of
+# taste and everything here can be left alone: the font, the size and the position
+# each have an "ask the deck" value, which is what a deck that has not been touched
+# gets.  The position is stored in 1/100 mm - the unit every geometry property in
+# ``core`` uses, and never derived from a point size (fact 20) - and the settings
+# dialog shows it in centimetres, the unit Impress's own Position and Size dialog
+# uses.
+
+#: Font of the box; "" = the font the deck paints its body text with.
+DEFAULT_SECTION_FONT = ""
+#: Colour of the box: the deck's own muted grey to begin with, because a section
+#: label is secondary information.
+DEFAULT_SECTION_COLOR = DEFAULT_MUTED_COLOR
+#: Point size of the box; 0 = the size the deck's body text uses.
+DEFAULT_SECTION_SIZE = 0.0
+#: Where the box goes in 1/100 mm; ``None`` = where the deck's own content box is.
+DEFAULT_SECTION_X = None
+DEFAULT_SECTION_Y = None
+DEFAULT_SECTION_WIDTH = None
+#: Take the look from the box on the first slide that already has one: edit that
+#: slide by hand and every other section slide is redrawn to match it.
+DEFAULT_SECTION_FOLLOW_FIRST = False
+
 DEFAULTS = {
     "muted_color": DEFAULT_MUTED_COLOR,
     "text_color": DEFAULT_TEXT_COLOR,
@@ -29,6 +56,13 @@ DEFAULTS = {
     # newest first, so the picker can offer them as a palette of their own the
     # way LibreOffice's colour dropdown does
     "recent_colors": [],
+    "section_font": DEFAULT_SECTION_FONT,
+    "section_color": DEFAULT_SECTION_COLOR,
+    "section_size": DEFAULT_SECTION_SIZE,
+    "section_x": DEFAULT_SECTION_X,
+    "section_y": DEFAULT_SECTION_Y,
+    "section_width": DEFAULT_SECTION_WIDTH,
+    "section_follow_first": DEFAULT_SECTION_FOLLOW_FIRST,
 }
 
 
@@ -160,7 +194,46 @@ def load(ctx):
     settings["title"] = str(settings["title"] or DEFAULT_TITLE)
     settings["master"] = str(settings["master"] or "")
     settings["recent_colors"] = _as_colors(settings["recent_colors"])
+    settings["section_font"] = str(settings["section_font"] or "").strip()
+    settings["section_color"] = _as_color(settings["section_color"],
+                                          DEFAULT_SECTION_COLOR)
+    settings["section_size"] = _as_point(settings["section_size"])
+    settings["section_x"] = _as_length(settings["section_x"])
+    settings["section_y"] = _as_length(settings["section_y"])
+    settings["section_width"] = _as_length(settings["section_width"])
+    settings["section_follow_first"] = bool(settings["section_follow_first"])
     return settings
+
+
+def _as_point(value):
+    """A point size, or ``0`` for "the deck's own"; rubbish is the same as empty.
+
+    ``CharHeight`` is a point size and nothing else in this code derives one from a
+    length (fact 20), and a hand-edited settings file has been seen to carry a string
+    here - which used to reach ``core`` and fail a whole run halfway through.
+    """
+    try:
+        size = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if size != size or size < 0:      # NaN or a negative size
+        return 0.0
+    return min(size, 400.0)
+
+
+def _as_length(value):
+    """A length in 1/100 mm as ``core`` wants it, or ``None`` for "the deck's own"."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    try:
+        length = float(value)
+    except (TypeError, ValueError):
+        return None
+    if length != length or length < 0:
+        return None
+    return int(round(length))
 
 
 def _as_colors(value):
