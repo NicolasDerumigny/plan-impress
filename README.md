@@ -1,14 +1,18 @@
 # Plan Impress
 
-A LibreOffice Impress extension that adds a **Plan** menu and inserts agenda
-slides for the presentation's sections:
+A LibreOffice Impress extension that adds a **Plan** menu which works the
+presentation's sections into the deck:
 
 * one **overview slide** in front of the first section, listing every section;
 * one **plan slide at the top of each section**, also listing every section,
   with only the current section drawn in the text colour and all the others in
   the muted colour;
+* the **section name on every slide of a section**: *Insert Section Titles*
+  writes the name of the section a slide belongs to above the heading that slide
+  already has, and *Remove Section Titles* takes those labels away again;
 * a **Settings…** dialog for the muted colour, the highlight colour, the title of
-  the plan slides and the master slide they are based on;
+  the plan slides, the master slide they are based on and the defaults a section
+  label falls back on;
 * a **colour picker** behind each colour: click the swatch and choose from the
   colours this presentation already uses, the ones you picked recently, or any
   palette LibreOffice ships (`standard`, `material`, `html`, …) — the same list
@@ -84,6 +88,43 @@ That naming is how the extension recognises its own output, so:
 * if you rename or delete a generated slide, the next run simply creates a
   fresh set.
 
+### Section names on the slides
+
+*Insert Section Titles* writes the name of the section each slide belongs to into
+a text box on that slide; *Remove Section Titles* takes those boxes away again.
+
+```
+     Introduction      <- the section's name: the slide's running head
+     Welcome           <- the heading the slide already had, untouched
+     …                 <- and its content, untouched
+```
+
+* **One box per slide inside a section.** The slides before the first section get
+  nothing — they have no section to name — and neither do the plan slides, which
+  name their section in their heading already.
+* The box sits **above** the heading. That is where a running head goes, and where
+  a label belongs: put between the heading and the body it prints through the
+  heading's own glyphs. A deck whose heading already starts at the top of the slide
+  gets the label under the heading instead.
+* **Re-running updates, it does not add.** A box that is there is rewritten where
+  it stands — text, position, size and characters — and no second box appears beside
+  it. That covers a slide you duplicated: the copy carries the same box and it is
+  found and rewritten, not painted over. A slide that has *left* its section loses
+  its box on the next run.
+* **The first box the command sees is the template.** Style one label by hand — the
+  font, the size, the colour, the weight, where the box sits, how its lines sit in
+  it — and every other label of the deck comes out the same way. The four *Default
+  …* settings of *Settings…* (colour, font, size, and the X, Y and W position in
+  centimetres, the way Impress's own *Position and Size* dialog says them) only say
+  what a label looks like where no slide has one to copy, which is why they are
+  called *Default …* and why there is no checkbox for the choice.
+* The boxes are named `PlanImpress:SectionText:Slide:<n>` — the number is the
+  position the box now holds, and is rewritten on every run, so a slide that moved
+  says and names the section it is in *now*. The prefix is how the extension
+  recognises its own labels.
+* A box is a plain text box with no fill and no frame, not a content placeholder: it
+  is a label on the slide, and it stays out of the deck's own layout.
+
 Settings are stored per LibreOffice user profile in
 `<profile>/user/planimpress/settings.json`, so they survive extension updates
 and are easy to edit or version by hand.
@@ -97,7 +138,7 @@ the `.oxt`.
 |---|---|
 | `src/Addons.xcu` | The Plan menu and the icons for its items |
 | `src/handler.py` | The `com.sun.star.task.Job` implementations the menu items dispatch to |
-| `src/plan_impress/core.py` | All document-model work: sections, page insertion, slide content |
+| `src/plan_impress/core.py` | All document-model work: sections, page insertion, slide content, section-name boxes |
 | `src/plan_impress/dialog.py` | The settings dialog and the message boxes |
 | `src/plan_impress/picker.py` | The palette picker the colour swatches open |
 | `src/plan_impress/palettes.py` | The office's `.soc` colour tables, the deck's own colours, recently used ones |
@@ -118,6 +159,11 @@ The flow of a menu click:
    sections, inserts the plan pages at the right positions, fills them with a
    title shape and one paragraph per section, copies the deck's footer band onto
    them, and rewrites the section list so every plan slide leads its own section.
+5. The two *Section Titles* items take the same route to
+   `core.apply_section_titles()` and `core.remove_section_titles()`, which write
+   one named text box per section slide — copying the look of the first box the
+   command finds, if the deck already has one — and delete exactly those boxes
+   again.
 
 Only `handler.py` is registered as a UNO component; it puts its own folder on
 `sys.path` and imports the rest of the `plan_impress` package normally. That
@@ -151,6 +197,19 @@ failure would silently make the whole extension disappear from the menu.
   footer frames when the deck carries its own. A deck whose author switched the
   footer on but typed nothing prints nothing, and the plan slides print nothing
   there too: switched on is not the same as filled in.
+* **A section label copies the deck, the same way.** The first box the command finds
+  on a slide that is meant to have one decides the look of every other one —
+  rectangle, characters and where the lines sit in the box — because the way to ask
+  for one style across a deck is to style one label by hand. What the office paints
+  lives on the text's *portion*, not on the shape, so that is the first place the
+  copy looks (and the last place it writes); the settings are the fallback for a deck
+  with no box yet, not an override of a box the deck has.
+* **A label is a plain text box, flattened on every run.** It is deliberately not a
+  content placeholder: it should not join the vote that decides what the deck looks
+  like, and it should not inherit what a placeholder is for. Impress also hands a new
+  shape the fill and line of the last shape created, so a box that picked up a grey
+  plate somewhere — a duplicated slide, a template, an edit — is flattened again by
+  the next *Insert Section Titles*.
 
 ## Development
 
@@ -189,12 +248,18 @@ before the values are read back. Screenshots come last, because assertions have
 passed on a dialog nobody could use.
 
 Debugging helpers live in `dev/` (`debug_twice.py`, `debug_move.py`,
-`debug_dialog*.py`, `debug_footer*.py`, `dep_probe.py`, `measure_text.py`, plus
-`render_plan.py` and `show_plan.py` for a look at the result); each one
-reproduces one of the LibreOffice behaviours described in `AGENTS.md` and prints
-what it measured. `probe_api.py`, `probe_palettes.py` and `probe_paint.py` are the
-three that asked the office whether it had a colour picker, a palette list or a
-paintable control at all — it has none, which is why `picker.py` exists.
+`debug_dialog*.py`, `debug_footer*.py`, `debug_section_titles.py`, `dep_probe.py`,
+`measure_text.py`, plus `render_plan.py`, `render_section_titles.py` and
+`show_plan.py` for a look at the result); each one reproduces one of the
+LibreOffice behaviours described in `AGENTS.md` and prints what it measured.
+`probe_api.py`, `probe_palettes.py` and `probe_paint.py` are the three that asked
+the office whether it had a colour picker, a palette list or a paintable control at
+all — it has none, which is why `picker.py` exists. The section labels have their
+own witnesses: `debug_section_titles.py` prints what the office says about every
+box (its name, its rectangle, and its characters at shape, paragraph *and* portion
+level — the third is what paints), and `render_section_titles.py` exports the deck
+and prints the bands of glyphs `pdftotext -bbox` answers with, which is how "the
+label does not print through the heading" is seen rather than assumed.
 
 ## Documentation for agents
 
