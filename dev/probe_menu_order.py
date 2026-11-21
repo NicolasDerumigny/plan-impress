@@ -4,8 +4,8 @@
 
 ``Addons.xcu`` lists the submenu items in the order they are meant to appear - but the
 office does not hand those children back in that order (fact 98), so the only witness
-for "*Toggle Debug Log* is the last row and a separator is in front of it" is the popup
-itself.  Three things had to be measured before the rows could be counted, and each is
+for "these six rows, in this order, in three separated groups" is the popup itself.
+Three things had to be measured before the rows could be counted, and each is
 why this probe looks the way it does:
 
 * the popup is **not** found by diffing a screenshot against the closed desktop.  Over
@@ -220,7 +220,7 @@ def wanted_separator_rows():
             url = str(value.text) if value is not None else ""
             if url == "private:separator":
                 rows.append(items + 1)           # in front of the next item
-            elif url.startswith("service:org.devsys.planimpress."):
+            elif url.startswith("service:org.nicolasderumigny.planimpress."):
                 items += 1
     return rows, items
 

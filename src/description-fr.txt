@@ -4,10 +4,15 @@ Plan Impress ajoute un menu « Plan » à LibreOffice Impress.
   section, puis une diapositive de plan en tête de chaque section. Chacune liste
   toutes les sections de la présentation ; seule la section courante est peinte
   dans la couleur de texte, les autres utilisent la couleur éteinte.
-* Paramètres... choisit la couleur éteinte, la couleur de mise en évidence, le
-  titre des diapositives générées et la master page sur laquelle elles se
-  basent.
 * Supprimer les diapositives de plan les retire toutes à nouveau.
+* Insérer des titres de section écrit le nom de la section de chaque diapositive
+  au-dessus de son titre. Relancer la commande met ces zones à jour au lieu d'en
+  ajouter, et Supprimer les titres de section les retire.
+* Paramètres... choisit la couleur éteinte, la couleur de mise en évidence, le
+  titre des diapositives générées, la master page sur laquelle elles se basent,
+  et l'allure du nom de section lorsqu'il n'y a rien à copier.
+* Activer/désactiver le journal écrit la trace de chaque commande dans un
+  fichier.
 
 Les diapositives générées sont nommées « PlanImpress:... » : c'est ainsi que
 l'extension reconnaît son propre travail. Lancer la commande une seconde fois

@@ -6,13 +6,15 @@ that turned out to be wrong or incomplete.
 
 ## What this is
 
-A LibreOffice Impress extension (`org.devsys.planimpress`) that inserts agenda
-slides: one overview slide before the first section, plus one identical plan
-slide at the top of each section where only the current section is drawn in the
-text colour. A `Plan` menu provides, in that order, *Insert Plan Slides*, —,
-*Settings…*, *Remove Plan Slides*, *Insert Section Titles*, *Remove Section
-Titles*, — and *Toggle Debug Log*, where each — is a separator (the order is the
-node naming: fact 98).
+A LibreOffice Impress extension (`org.nicolasderumigny.planimpress`) that
+inserts agenda slides: one overview slide before the first section, plus one
+identical plan slide at the top of each section where only the current section
+is drawn in the text colour. A `Plan` menu provides, in that order, *Insert Plan
+Slides*, *Remove Plan Slides*, —, *Insert Section Titles*, *Remove Section
+Titles*, —, *Settings…* and *Toggle Debug Log*, where each — is a separator: the
+two commands that put the plan slides in and take them out, then the two that
+write the section names and take them back, then the two that change nothing in
+the deck (the order is the node naming: fact 98).
 
 ## Layout
 
@@ -993,7 +995,7 @@ below are why the code is shaped as it is.
    order they are written.** The items under `Submenu` are the menu's rows, and the
    office builds the popup out of the container's own element list: reading the merged
    configuration back (`ConfigurationAccess` on `/org.openoffice.Office.Addons/AddonUI/
-   OfficeMenuBarMerging/org.devsys.planimpress/S1/MenuItems/M1/Submenu`) answered
+   OfficeMenuBarMerging/org.nicolasderumigny.planimpress/S1/MenuItems/M1/Submenu`) answered
    `mm1, mm2, mm3, mm4, mm5, mm6, mm41, mm42` for a file that listed `mm41`/`mm42`
    between `mm4` and `mm5` — the names are compared **numerically**. That is the report
    "*Toggle Debug Log* is not last": the two section commands jumped past `mm6`, so the
@@ -1002,8 +1004,9 @@ below are why the code is shaped as it is.
    order and the written order cannot disagree, and check it against the configuration
    rather than against the file —
    `tests/run_tests.py::the_menu_rows_come_back_in_the_order_the_file_lists_them` reads
-   the element list back and `toggle_debug_log_is_the_last_row_with_a_separator_in_front`
-   pins the same thing in the file, including that tail.
+   the element list back and compares it with `MENU_ROWS`, the order the deck is worked
+   in, and `toggle_debug_log_is_the_last_row_and_the_tail_is_its_own_group` pins the
+   same thing in the file, including that tail.
 99. **A separator draws no line at all in this theme; what it leaves behind is air.** The
    gap between two rows of the popup is the popup's own `#383C4A` from edge to edge
    (`dev/probe_menu_order.py` prints what each band of air is painted
@@ -1149,11 +1152,17 @@ saying *Default* so a value the copied box overrules is not read as a broken opt
 (fact 93, both directions and the rubbish cases), plus `the_section_commands_are_on_the_menu`
 (pinned per URL: *Insert Section Titles* belongs to the inserting URL)
 and `menu_dispatch_writes_section_titles` for the two Jobs a click reaches. The
-menu's *rows* are pinned too, both ways round: `the_menu_rows_come_back_in_the_order_the_file_lists_them`
+menu's *rows* are pinned too, three ways round: `the_menu_groups_the_commands_in_the_order_the_deck_is_worked_in`
+takes the rows out of `Addons.xcu` and compares them with `MENU_ROWS` — the plan
+slides and their undo, the section names and their undo, then *Settings…* and *Toggle
+Debug Log* — with each row's label and both separator positions;
+`the_menu_rows_come_back_in_the_order_the_file_lists_them`
 asks the merged configuration for the element list the popup is built from (fact 98) and
-`toggle_debug_log_is_the_last_row_with_a_separator_in_front` pins the same order in the
-file, that the numbering is one fixed-width sequence, and that the last row is *Toggle
-Debug Log* with a separator directly in front of it.
+compares that with the same list; and
+`toggle_debug_log_is_the_last_row_and_the_tail_is_its_own_group` pins the numbering as
+one fixed-width sequence and the tail as separator, *Settings…*, *Toggle Debug Log* —
+the second report's "toggle debug log last with a separator", which the later order put
+in front of the pair rather than in front of the row.
 
 ### Looking at the result
 
@@ -1203,9 +1212,9 @@ extension, which is how "does nothing" was shown to be an empty box rather than 
 that never ran. `dev/probe_menu_order.py` is the same trick for the *Plan* menu: it finds
 the popup as the window that appears when the menu is clicked, counts its rows of letters,
 measures the pitch between them and compares the extra air with the separator positions
-`Addons.xcu` asks for — the only witness for "the last row is *Toggle Debug Log* and a
-separator is in front of it", because a separator paints no line here (fact 99) and the
-menu's order is not the file's order (fact 98).
+`Addons.xcu` asks for — the only witness for "these six rows, in this order, in three
+groups", because a separator paints no line here (fact 99) and the menu's order is not
+the file's order (fact 98).
 
 The section-name box has four of its own. `dev/debug_section_titles.py` prints what the
 office really says about the boxes: every slide's section, each box's name (this is where

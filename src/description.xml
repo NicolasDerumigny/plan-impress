@@ -4,13 +4,14 @@
              xmlns:lo="http://libreoffice.org/extensions/description/2011"
              xmlns:xlink="http://www.w3.org/1999/xlink">
     <version value="1.0.0"/>
-    <identifier value="org.devsys.planimpress"/>
+    <identifier value="org.nicolasderumigny.planimpress"/>
     <display-name>
         <name lang="en-US">Plan Impress</name>
         <name lang="fr">Plan Impress</name>
     </display-name>
     <publisher>
-        <name lang="en-US" xlink:href="https://devsys.org">devsys</name>
+        <name lang="en-US">Nicolas Derumigny [AI]</name>
+        <name lang="fr">Nicolas Derumigny [AI]</name>
     </publisher>
     <extension-description>
         <src lang="en-US" xlink:href="description-en-US.txt"/>

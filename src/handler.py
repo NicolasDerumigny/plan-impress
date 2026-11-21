@@ -1,7 +1,7 @@
 """Menu entry points for Plan Impress.
 
 Each menu item points at a ``com.sun.star.task.Job`` service (see
-``Addons.xcu``): a URL like ``service:org.devsys.planimpress.InsertPlan`` makes
+``Addons.xcu``): a URL like ``service:org.nicolasderumigny.planimpress.InsertPlan`` makes
 LibreOffice instantiate the matching implementation registered below and call
 ``XJobExecutor.trigger()``.
 
@@ -275,17 +275,17 @@ if not _REGISTRATION_ONLY:
     _JOB = ("com.sun.star.task.Job",)
     _HELPER = unohelper.ImplementationHelper()
     _HELPER.addImplementation(
-        InsertPlan, "org.devsys.planimpress.InsertPlan", _JOB)
+        InsertPlan, "org.nicolasderumigny.planimpress.InsertPlan", _JOB)
     _HELPER.addImplementation(
-        RemovePlan, "org.devsys.planimpress.RemovePlan", _JOB)
+        RemovePlan, "org.nicolasderumigny.planimpress.RemovePlan", _JOB)
     _HELPER.addImplementation(
-        SectionTitles, "org.devsys.planimpress.SectionTitles", _JOB)
+        SectionTitles, "org.nicolasderumigny.planimpress.SectionTitles", _JOB)
     _HELPER.addImplementation(
-        RemoveSectionTitles, "org.devsys.planimpress.RemoveSectionTitles", _JOB)
+        RemoveSectionTitles, "org.nicolasderumigny.planimpress.RemoveSectionTitles", _JOB)
     _HELPER.addImplementation(
-        Settings, "org.devsys.planimpress.Settings", _JOB)
+        Settings, "org.nicolasderumigny.planimpress.Settings", _JOB)
     _HELPER.addImplementation(
-        Debug, "org.devsys.planimpress.Debug", _JOB)
+        Debug, "org.nicolasderumigny.planimpress.Debug", _JOB)
     g_ImplementationHelper = _HELPER
 else:  # pragma: no cover
     # Registered without the real interface: drop the module from the cache so

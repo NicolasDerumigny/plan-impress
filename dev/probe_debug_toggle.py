@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 import lo  # noqa: E402
 from plan_impress import config  # noqa: E402
 
-DEBUG_SERVICE = "service:org.devsys.planimpress.Debug?debug"
+DEBUG_SERVICE = "service:org.nicolasderumigny.planimpress.Debug?debug"
 DOC = os.path.join(ROOT, "tests", "fixtures", "sections.odp")
 
 ctx = lo.connect()

@@ -59,6 +59,7 @@ unit:
 	$(PY) tests/run_tests.py dark_theme
 	$(PY) tests/run_tests.py chooser_is_wide
 	$(PY) tests/run_tests.py toggle_debug_log
+	$(PY) tests/run_tests.py the_menu_groups
 	$(PY) tests/run_tests.py message_box_reports
 	$(PY) tests/run_tests.py toggling_the_debug
 

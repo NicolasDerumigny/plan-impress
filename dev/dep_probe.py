@@ -12,7 +12,7 @@ import subprocess
 import zipfile
 
 WORK = "/tmp/opencode/depprobe"
-IDENTIFIER = "org.devsys.depprobe"
+IDENTIFIER = "org.nicolasderumigny.depprobe"
 
 VARIANTS = {
     "none": "",

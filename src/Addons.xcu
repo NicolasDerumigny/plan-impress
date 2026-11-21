@@ -20,7 +20,7 @@
                     oor:package="org.openoffice.Office">
     <node oor:name="AddonUI">
         <node oor:name="OfficeMenuBarMerging">
-            <node oor:name="org.devsys.planimpress" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress" oor:op="replace">
                 <node oor:name="S1" oor:op="replace">
                     <prop oor:name="MergePoint">
                         <value>.uno:SlideShowMenu</value>
@@ -61,14 +61,23 @@
                                      debug log last with a separator in the menu".
                                      Keep the sequence fixed width: then the numeric
                                      order and the written order are the same
-                                     (fact 98, dev/probe_menu_order.py). -->
+                                     (fact 98, dev/probe_menu_order.py).
+
+                                     Three groups, in the order the deck is worked in:
+                                     the two commands that put the plan slides in and
+                                     take them out, the two that write the section
+                                     names and take them back, then the two that
+                                     change nothing in the deck - the option screen
+                                     and the debug log.  The whole list is pinned by
+                                     tests/run_tests.py::the_menu_groups_the_commands_
+                                     in_the_order_the_deck_is_worked_in. -->
                                 <node oor:name="mm01" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Insert Plan Slides</value>
                                         <value xml:lang="fr">Insérer les diapositives de plan</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.InsertPlan?insert</value>
+                                        <value>service:org.nicolasderumigny.planimpress.InsertPlan?insert</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -78,17 +87,12 @@
                                     </prop>
                                 </node>
                                 <node oor:name="mm02" oor:op="replace">
-                                    <prop oor:name="URL" oor:type="xs:string">
-                                        <value>private:separator</value>
-                                    </prop>
-                                </node>
-                                <node oor:name="mm03" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
-                                        <value xml:lang="en-US">Settings…</value>
-                                        <value xml:lang="fr">Paramètres…</value>
+                                        <value xml:lang="en-US">Remove Plan Slides</value>
+                                        <value xml:lang="fr">Supprimer les diapositives de plan</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.Settings?settings</value>
+                                        <value>service:org.nicolasderumigny.planimpress.RemovePlan?remove</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -97,13 +101,18 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
+                                <node oor:name="mm03" oor:op="replace">
+                                    <prop oor:name="URL" oor:type="xs:string">
+                                        <value>private:separator</value>
+                                    </prop>
+                                </node>
                                 <node oor:name="mm04" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
-                                        <value xml:lang="en-US">Remove Plan Slides</value>
-                                        <value xml:lang="fr">Supprimer les diapositives de plan</value>
+                                        <value xml:lang="en-US">Insert Section Titles</value>
+                                        <value xml:lang="fr">Insérer des titres de section</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.RemovePlan?remove</value>
+                                        <value>service:org.nicolasderumigny.planimpress.SectionTitles?section_titles</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -114,11 +123,11 @@
                                 </node>
                                 <node oor:name="mm05" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
-                                        <value xml:lang="en-US">Insert Section Titles</value>
-                                        <value xml:lang="fr">Insérer des titres de section</value>
+                                        <value xml:lang="en-US">Remove Section Titles</value>
+                                        <value xml:lang="fr">Supprimer les titres de section</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.SectionTitles?section_titles</value>
+                                        <value>service:org.nicolasderumigny.planimpress.RemoveSectionTitles?remove_section_titles</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -128,12 +137,17 @@
                                     </prop>
                                 </node>
                                 <node oor:name="mm06" oor:op="replace">
+                                    <prop oor:name="URL" oor:type="xs:string">
+                                        <value>private:separator</value>
+                                    </prop>
+                                </node>
+                                <node oor:name="mm07" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
-                                        <value xml:lang="en-US">Remove Section Titles</value>
-                                        <value xml:lang="fr">Supprimer les titres de section</value>
+                                        <value xml:lang="en-US">Settings…</value>
+                                        <value xml:lang="fr">Paramètres…</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles</value>
+                                        <value>service:org.nicolasderumigny.planimpress.Settings?settings</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -142,18 +156,13 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm07" oor:op="replace">
-                                    <prop oor:name="URL" oor:type="xs:string">
-                                        <value>private:separator</value>
-                                    </prop>
-                                </node>
                                 <node oor:name="mm08" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Toggle Debug Log</value>
                                         <value xml:lang="fr">Activer/désactiver le journal</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
-                                        <value>service:org.devsys.planimpress.Debug?debug</value>
+                                        <value>service:org.nicolasderumigny.planimpress.Debug?debug</value>
                                     </prop>
                                     <prop oor:name="Target" oor:type="xs:string">
                                         <value>_self</value>
@@ -171,9 +180,9 @@
 
         <!-- Icons for the items above. %origin% is the extension's own folder. -->
         <node oor:name="Images">
-            <node oor:name="org.devsys.planimpress.insert.images" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress.insert.images" oor:op="replace">
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.devsys.planimpress.InsertPlan?insert</value>
+                    <value>service:org.nicolasderumigny.planimpress.InsertPlan?insert</value>
                 </prop>
                 <node oor:name="UserDefinedImages">
                     <prop oor:name="ImageSmallURL" oor:type="xs:string">
@@ -184,9 +193,9 @@
                     </prop>
                 </node>
             </node>
-            <node oor:name="org.devsys.planimpress.settings.images" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress.settings.images" oor:op="replace">
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.devsys.planimpress.Settings?settings</value>
+                    <value>service:org.nicolasderumigny.planimpress.Settings?settings</value>
                 </prop>
                 <node oor:name="UserDefinedImages">
                     <prop oor:name="ImageSmallURL" oor:type="xs:string">
@@ -197,9 +206,9 @@
                     </prop>
                 </node>
             </node>
-            <node oor:name="org.devsys.planimpress.remove.images" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress.remove.images" oor:op="replace">
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.devsys.planimpress.RemovePlan?remove</value>
+                    <value>service:org.nicolasderumigny.planimpress.RemovePlan?remove</value>
                 </prop>
                 <node oor:name="UserDefinedImages">
                     <prop oor:name="ImageSmallURL" oor:type="xs:string">
@@ -210,9 +219,9 @@
                     </prop>
                 </node>
             </node>
-            <node oor:name="org.devsys.planimpress.section.images" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress.section.images" oor:op="replace">
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.devsys.planimpress.SectionTitles?section_titles</value>
+                    <value>service:org.nicolasderumigny.planimpress.SectionTitles?section_titles</value>
                 </prop>
                 <node oor:name="UserDefinedImages">
                     <prop oor:name="ImageSmallURL" oor:type="xs:string">
@@ -223,9 +232,9 @@
                     </prop>
                 </node>
             </node>
-            <node oor:name="org.devsys.planimpress.section_remove.images" oor:op="replace">
+            <node oor:name="org.nicolasderumigny.planimpress.section_remove.images" oor:op="replace">
                 <prop oor:name="URL" oor:type="xs:string">
-                    <value>service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles</value>
+                    <value>service:org.nicolasderumigny.planimpress.RemoveSectionTitles?remove_section_titles</value>
                 </prop>
                 <node oor:name="UserDefinedImages">
                     <prop oor:name="ImageSmallURL" oor:type="xs:string">

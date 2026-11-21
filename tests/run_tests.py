@@ -31,15 +31,35 @@ FIXTURE = os.path.join(HERE, "fixtures", "sections.odp")
 NO_FOOTER_FIXTURE = os.path.join(HERE, "fixtures", "sections_no_footer.odp")
 #: The section titles the fixture carries, in deck order (`make_fixture.py`).
 SECTION_NAMES = ["Introduction", "Architecture", "Demo"]
-SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
+SERVICE = "service:org.nicolasderumigny.planimpress.InsertPlan?insert"
+#: The other four commands the menu carries, by the URL a click takes.
+REMOVE_SERVICE = "service:org.nicolasderumigny.planimpress.RemovePlan?remove"
 #: The URL *Section Titles* is bound to, for the dispatch test below.
-SECTION_SERVICE = "service:org.devsys.planimpress.SectionTitles?section_titles"
+SECTION_SERVICE = "service:org.nicolasderumigny.planimpress.SectionTitles?section_titles"
+REMOVE_SECTION_SERVICE = \
+    "service:org.nicolasderumigny.planimpress.RemoveSectionTitles?remove_section_titles"
+SETTINGS_SERVICE = "service:org.nicolasderumigny.planimpress.Settings?settings"
 #: The URL *Toggle Debug Log* is bound to: the last row of the menu (fact 98).
-DEBUG_URL = "service:org.devsys.planimpress.Debug?debug"
+DEBUG_URL = "service:org.nicolasderumigny.planimpress.Debug?debug"
+#: The rows of the *Plan* menu, in the order they are meant to appear: the two
+#: commands that put the plan slides in and take them out, then the two that write the
+#: section names and take them back, then the two that change nothing in the deck.
+#: What the office hands back is sorted by node name, not by this list (fact 98), so
+#: both are pinned: ``the_menu_groups_the_commands_in_the_order_the_deck_is_worked_in``
+#: reads the file and ``the_menu_rows_come_back_in_the_order_the_file_lists_them``
+#: reads the merged configuration.
+MENU_ROWS = [SERVICE, REMOVE_SERVICE, "private:separator", SECTION_SERVICE,
+             REMOVE_SECTION_SERVICE, "private:separator", SETTINGS_SERVICE, DEBUG_URL]
+#: What each of those rows has to read as: a row that names the wrong command is the
+#: report "Insert Section Titles" was, when the two section items could be swapped.
+MENU_TITLES = {SERVICE: "Insert Plan Slides", REMOVE_SERVICE: "Remove Plan Slides",
+               SECTION_SERVICE: "Insert Section Titles",
+               REMOVE_SECTION_SERVICE: "Remove Section Titles",
+               SETTINGS_SERVICE: "Settings…", DEBUG_URL: "Toggle Debug Log"}
 #: Where the merged ``Addons.xcu`` keeps the rows of the *Plan* submenu.  The node
 #: names the configuration answers with *are* the menu's rows, in its own order.
 SUBMENU_PATH = ("/org.openoffice.Office.Addons/AddonUI/OfficeMenuBarMerging/"
-                "org.devsys.planimpress/S1/MenuItems/M1/Submenu")
+                "org.nicolasderumigny.planimpress/S1/MenuItems/M1/Submenu")
 #: what ``tests/make_fixture.py`` writes into the footer of every slide
 FOOTER_TEXT = "Quarterly Review 2026"
 
@@ -3184,15 +3204,15 @@ def the_section_commands_are_on_the_menu():
                      for prop in node.findall("prop"))
         url = props.get("URL")
         if url is not None and str(url.text or "").startswith(
-                "service:org.devsys.planimpress."):
+                "service:org.nicolasderumigny.planimpress."):
             by_url.setdefault(str(url.text), []).append(props)
     wanted = {
         # the label is pinned per URL: the report was that the item reads as the
         # command it is, so *Insert Section Titles* names the inserting one and a
         # shared list of both strings would let them be swapped
-        "service:org.devsys.planimpress.SectionTitles?section_titles":
+        "service:org.nicolasderumigny.planimpress.SectionTitles?section_titles":
             "Insert Section Titles",
-        "service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles":
+        "service:org.nicolasderumigny.planimpress.RemoveSectionTitles?remove_section_titles":
             "Remove Section Titles",
     }
     for url, title in wanted.items():
@@ -3205,8 +3225,8 @@ def the_section_commands_are_on_the_menu():
                    and str(props["Target"].text) == "_self" for props in nodes), \
             "%s needs Target=_self (fact 7)" % url
     source = open(handler).read()
-    for implementation in ("org.devsys.planimpress.SectionTitles",
-                           "org.devsys.planimpress.RemoveSectionTitles"):
+    for implementation in ("org.nicolasderumigny.planimpress.SectionTitles",
+                           "org.nicolasderumigny.planimpress.RemoveSectionTitles"):
         assert implementation in source, "%s is not registered" % implementation
     for command in ("do_section_titles", "do_remove_section_titles"):
         assert "def %s" % command in source, "handler.py has no %s" % command
@@ -3589,7 +3609,7 @@ def remove_plan_loses_no_slide_of_a_half_finished_deck():
 # the installed extension: menu registration and the dispatch path
 # --------------------------------------------------------------------------- #
 
-IDENTIFIER = "org.devsys.planimpress"
+IDENTIFIER = "org.nicolasderumigny.planimpress"
 
 
 def _extension_installed(ctx):
@@ -3660,11 +3680,11 @@ def addons_registered():
     joined = "\n".join(strings)
     for expected in (IDENTIFIER, ".uno:SlideShowMenu", "AddAfter", "AddPath",
                      "com.sun.star.presentation.PresentationDocument",
-                     "service:org.devsys.planimpress.InsertPlan?insert",
-                     "service:org.devsys.planimpress.Settings?settings",
-                     "service:org.devsys.planimpress.RemovePlan?remove",
-                     "service:org.devsys.planimpress.SectionTitles?section_titles",
-                     "service:org.devsys.planimpress.RemoveSectionTitles"
+                     "service:org.nicolasderumigny.planimpress.InsertPlan?insert",
+                     "service:org.nicolasderumigny.planimpress.Settings?settings",
+                     "service:org.nicolasderumigny.planimpress.RemovePlan?remove",
+                     "service:org.nicolasderumigny.planimpress.SectionTitles?section_titles",
+                     "service:org.nicolasderumigny.planimpress.RemoveSectionTitles"
                      "?remove_section_titles",
                      "Insert Section Titles", "Remove Section Titles",
                      "icons/section_16.png", "icons/section_remove_26.png",
@@ -3699,17 +3719,52 @@ def _menu_rows():
 
 
 @test
-def toggle_debug_log_is_the_last_row_with_a_separator_in_front():
-    """The last two rows of the menu are the two rows the file puts there.
+def the_menu_groups_the_commands_in_the_order_the_deck_is_worked_in():
+    """Three groups of two, in the order the deck is worked in.
 
-    "Put the *toggle debug log* last with a separator in the menu".  The office builds
-    the popup out of the node names the configuration answers with, and it answers them
-    **sorted numerically**, not in the order they were written (fact 98): while the
-    section commands were named ``mm41``/``mm42`` between ``mm4`` and ``mm5`` they came
-    back after ``mm6``, so *Toggle Debug Log* sat in the middle of the menu with its
-    separator in front of it and the two section items behind it.  The numbering is
-    therefore part of the menu's look and is pinned here in both spellings of the
-    comparison, together with the tail the report asked for.
+    "Reorganise the menu that way: Insert plan slide / Remove plan slides / separator /
+    Insert section title / Remove section title / separator / parameter / debug log".
+    Each pair is a command and its undo, so they sit together instead of *Settings…*
+    splitting *Insert Plan Slides* from *Remove Plan Slides* the way it used to, and the
+    two separators are what says which group a row belongs to.
+
+    The file is only half the claim: the office re-sorts the rows by node name (fact
+    98).  ``the_menu_rows_come_back_in_the_order_the_file_lists_them`` asks the merged
+    configuration for this same list and ``dev/probe_menu_order.py`` photographs the
+    popup and matches the air the separators leave against it.
+    """
+    rows = _menu_rows()
+    urls = [url for _name, url, _title in rows]
+    assert urls == MENU_ROWS, [url.rsplit(".", 1)[-1] for url in urls]
+    for url, _name, title in rows:
+        if url in MENU_TITLES:
+            assert str(title) == MENU_TITLES[url], \
+                "%s reads %r, not %r" % (url, title, MENU_TITLES[url])
+    # the two rows a separator is meant to stand in front of: the first of each group
+    # after the first, and nothing else.  Counted here rather than left to the list
+    # above so a third separator cannot slip in and the message says where it is.
+    before = [urls[index + 1].rsplit(".", 1)[-1]
+              for index, url in enumerate(urls) if url == "private:separator"]
+    assert before == ["SectionTitles?section_titles",
+                      "Settings?settings"], before
+
+
+@test
+def toggle_debug_log_is_the_last_row_and_the_tail_is_its_own_group():
+    """The last row is *Toggle Debug Log*, and the tail is separated off as a group.
+
+    Two reports, one rule: "put the *toggle debug log* last with a separator in the
+    menu", then the order it was asked for - plan, section, then the two that change
+    nothing in the deck.  So the separator stands in front of the *pair* the debug
+    command belongs to rather than directly in front of the command itself: the last
+    three rows are separator, *Settings…*, *Toggle Debug Log*.
+
+    The numbering is part of the menu's look and is pinned here in both spellings of
+    the comparison, because the office builds the popup out of the node names the
+    configuration answers with and answers them **sorted numerically**, not in the
+    order they were written (fact 98): while the section commands were named
+    ``mm41``/``mm42`` between ``mm4`` and ``mm5`` they came back after ``mm6``, so
+    *Toggle Debug Log* sat in the middle of the menu.
     """
     rows = _menu_rows()
     assert rows, "Addons.xcu has no Submenu"
@@ -3724,10 +3779,11 @@ def toggle_debug_log_is_the_last_row_with_a_separator_in_front():
         "the office sorts the rows as %s, which is not the written order" % numbers
     items = [row for row in rows if row[1].startswith("service:")]
     assert len(items) == 6, [row[2] for row in items]
-    last, before = rows[-1], rows[-2]
-    assert last[1] == DEBUG_URL, "the last row is %r (%s)" % (last[2], last[1])
-    assert before[1] == "private:separator", \
-        "the row in front of %r is %r, not a separator" % (last[2], before[1])
+    urls = [url for _name, url, _title in rows]
+    assert urls[-1] == DEBUG_URL, "the last row is %r (%s)" % (rows[-1][2], urls[-1])
+    assert urls[-3:] == ["private:separator", SETTINGS_SERVICE, DEBUG_URL], \
+        "the tail is %s: *Toggle Debug Log* is not the last row of a separated group" \
+        % [url.rsplit(".", 1)[-1] for url in urls[-3:]]
 
 
 @test
@@ -3736,10 +3792,10 @@ def the_menu_rows_come_back_in_the_order_the_file_lists_them():
 
     ``addons_registered`` proves the file was accepted at all; this proves the
     configuration still answers the rows in the written order - the order the popup is
-    built from (fact 98) - and that the last row is *Toggle Debug Log* with a separator
-    directly in front of it.  ``dev/probe_menu_order.py`` is the screenshot side of the
-    same claim: a separator draws no line in this theme, so the rows are counted and
-    the air between them measured against what the file asks for.
+    built from (fact 98) - and that they are the six commands in the three groups the
+    deck is worked in (``MENU_ROWS``).  ``dev/probe_menu_order.py`` is the screenshot
+    side of the same claim: a separator draws no line in this theme, so the rows are
+    counted and the air between them measured against what the file asks for.
     """
     ctx = lo.connect()
     if not _extension_installed(ctx):
@@ -3754,10 +3810,9 @@ def the_menu_rows_come_back_in_the_order_the_file_lists_them():
     assert names == written, \
         "the office hands the rows back as %s, the file lists %s" % (names, written)
     urls = [str(getattr(view.getByName(name), "URL", "") or "") for name in names]
-    assert urls.count("private:separator") == 2, urls
-    assert urls[-1] == DEBUG_URL, urls
-    assert urls[-2] == "private:separator", \
-        "the row in front of the last one is %r, not a separator" % urls[-2]
+    assert urls == MENU_ROWS, \
+        "the popup is built in the order %s, not the order the deck is worked in" % \
+        [url.rsplit(".", 1)[-1] for url in urls]
 
 
 @test

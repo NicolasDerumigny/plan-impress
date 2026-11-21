@@ -65,8 +65,14 @@ Requires LibreOffice 7.0 or newer; developed and tested on 26.8.
 |---|---|
 | Insert Plan Slides | Regenerates the overview slide and one plan slide per section |
 | Remove Plan Slides | Deletes every slide the extension generated |
-| Settings… | Colours (each with a palette picker), plan slide title, master slide |
+| Insert Section Titles | Writes each slide's section name above its heading, and updates the boxes already there |
+| Remove Section Titles | Takes those name boxes away again |
+| Settings… | Colours (each with a palette picker), plan slide title, master slide, the defaults the section label falls back on |
 | Toggle Debug Log | Turns the trace log on or off |
+
+The six rows are three groups of two, with a line between the groups: the plan
+slides and their undo, the section names and their undo, and the two commands
+that change nothing in the deck.
 
 Plan slides are named `PlanImpress:Overview` and `PlanImpress:Section=<n>`.
 That naming is how the extension recognises its own output, so:
@@ -102,7 +108,7 @@ the `.oxt`.
 The flow of a menu click:
 
 1. `Addons.xcu` merges a *Plan* menu into the Impress menu bar. Its items carry
-   a URL such as `service:org.devsys.planimpress.InsertPlan?insert`.
+   a URL such as `service:org.nicolasderumigny.planimpress.InsertPlan?insert`.
 2. LibreOffice instantiates that implementation name — registered in
    `handler.py` — as a `com.sun.star.task.Job` and calls
    `XJobExecutor.trigger()`.
@@ -195,6 +201,11 @@ paintable control at all — it has none, which is why `picker.py` exists.
 `AGENTS.md` records the LibreOffice API behaviours this extension depends on —
 the ones that cost real debugging time — plus the layout, the commands and the
 conventions to follow when changing it. Read it before editing.
+
+## Author
+
+Nicolas Derumigny [AI] — developed with an AI coding agent, which the bracketed
+`[AI]` says on the Extension Manager's screen as well (`src/description.xml`).
 
 ## License
 
