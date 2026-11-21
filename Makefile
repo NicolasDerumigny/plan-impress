@@ -61,6 +61,7 @@ unit:
 	$(PY) tests/run_tests.py toggle_debug_log
 	$(PY) tests/run_tests.py the_menu_groups
 	$(PY) tests/run_tests.py message_box_reports
+	$(PY) tests/run_tests.py the_message_box
 	$(PY) tests/run_tests.py toggling_the_debug
 
 icons:

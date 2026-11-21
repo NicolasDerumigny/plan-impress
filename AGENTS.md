@@ -646,9 +646,23 @@ generated ones say about themselves, side by side) on LibreOffice 26.8.
    Python (`dialog.box_lines`, `break_long_words=True` because a log path is one long
    word, `break_on_hyphens=False` because splitting a path at a hyphen makes it look
    like two paths) and one label per line, which is also what fixes the window height.
-   How many of those characters fit on one line is `dev/probe_message_width.py`: the
-   report "the message has not enough width, the message is cut (incomplete path)" was
-   `_BOX_CHARS` at 44, and a peer has no text metrics to ask (fact 46).
+   How wide a line has to be for its ink to fit is `dev/probe_message_width.py`, which
+   paints every candidate **twice** — once in the label width the box really uses, once
+   in a reference label four times as wide — and reports the difference in pixels,
+   because a peer has no text metrics to ask (fact 46). The report "the message has not
+   enough width, the message is cut (incomplete path)" came back **twice**, and both
+   times the cause was one number for every character: first `_BOX_CHARS` at 44 (344 px
+   of words in a 278 px label), then a box sized on the 7.9 px a character a *path*
+   costs while the line it cut, `/home/derumigny/Documents/plan-impre`, is 311 px of ink
+   because of one capital `D` (8.64 px a character). So the box is as wide as the widest
+   line it has to show — `dialog.box_text_width` over `dialog.text_px`, which budgets the
+   three classes the probe photographs thirty of at a time: 8.93 px a lower case letter,
+   9.93 px a digit, 13.90 px an `M` (12.33 px across `MWI@`), each rounded up — between
+   `_BOX_TEXT_MIN_W` and `_BOX_TEXT_MAX_W`, with `_BOX_MARGIN` of air all the way round;
+   a line too wide even for the widest box worth opening is cut in even pieces by
+   `_break_long` rather than painted past its edge. `dialog._BOX_TEXT_W` and
+   `dialog._BOX_CHAR_W` are gone: one width for every message is one width measured on
+   the wrong string.
    The office draws a **mnemonic underline under the first letter of the label that
    stands in front of an edit field** — the way a form underlines the label *of* a
    field — and the buttons carry theirs too, which is the office's own look. No
@@ -1109,7 +1123,11 @@ without the modal loop and checks what each button and each key answers, against
 real window. `toggling_the_debug_log_says_what_it_did` is the user's report: the
 marker flips *and* a box naming the log file is asked for — comment the
 `dialog.message` call out of `handler.do_debug` and it fails with "the command showed
-nothing at all".
+nothing at all". `the_message_box_is_wide_enough_for_the_path_it_prints` is the second
+report: the three per-character floors are the measured ones, so a constant cannot drift
+back down to the width of the narrowest string somebody happened to photograph, and every
+line of both the plain and the capital-heavy log path fits the label `box_specs` builds
+for it with the box's air left over.
 
 Things that are easy to break and are covered: re-running `insert_plan` must
 yield the identical slide list (this is what caught the section-corruption bug),
@@ -1175,13 +1193,17 @@ For the two widgets the office's own versions are the specification, and both ha
 probe that photographs them: `dev/probe_picker_look.py` opens the chooser the way the
 settings dialog does (open, palette switched, second page, pointer on a square) and
 `dev/probe_message_box.py` puts our box next to every spelling of
-`createMessageBox` there is, printing what each answered. `dev/probe_picker_peers.py`
-prints every control's rectangle in model units and in peer pixels and then measures
-the *ink* of the pager row — it finds the client area by the known colour of a
-square painted `#7FFF00`, because the window's peer answers `0,0` (fact 76) and the
-desktop here is the same grey as the dialog — and prints how far off centre the page
-indicator's glyphs actually are. When a layout looks wrong, that table says whether
-the layout or the reading of it is at fault.
+`createMessageBox` there is, printing what each answered. `dev/probe_message_width.py`
+is the width witness for the same box: it paints each candidate line twice, once in the
+label width the box really uses and once in a reference four times as wide, and prints
+the px each glyph class costs and which lines are `** CUT **` by how many pixels — the
+only way a message that loses the tail of a log path becomes visible (fact 72).
+`dev/probe_picker_peers.py` prints every control's rectangle in model units and in peer
+pixels and then measures the *ink* of the pager row — it finds the client area by the
+known colour of a square painted `#7FFF00`, because the window's peer answers `0,0`
+(fact 76) and the desktop here is the same grey as the dialog — and prints how far off
+centre the page indicator's glyphs actually are. When a layout looks wrong, that table
+says whether the layout or the reading of it is at fault.
 `dev/probe_swatch_look.py` is the same trick for a colour: it puts one candidate
 control per row (a button, an image control and a label, each with every border style
 and with and without a border colour), finds each square in the screenshot *by its

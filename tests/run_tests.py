@@ -1197,32 +1197,55 @@ def the_message_box_is_wide_enough_for_the_path_it_prints():
     """The log path *Toggle Debug Log* prints reaches its box whole.
 
     "the *debug log enable/disable* window message has not enough width, the message is
-    cut (incomplete path)".  A ``FixedText`` wraps nothing (fact 72), so a line longer
-    than its own box is not wrapped - it is painted past the edge and the tail never
-    appears; the box wraps in Python at ``_BOX_CHARS`` and that number has to agree with
-    the width of the label.  ``dev/probe_message_width.py`` photographs the path's own
-    characters at the box's font: 240 px of ink over 30 of them, 296 px over 38, and the
-    label stops painting at its own edge - which is how 44 characters (344 px) in a
-    278 px label looked like a truncated path.
+    cut (incomplete path)" - twice.  The first time the box was sized on the path's own
+    characters; the report came back because the line it cut was
+    ``/home/derumigny/Documents/plan-impre``: 311 px of ink for 36 characters, one of
+    them a capital ``D``, in a label 303 px wide.  A ``FixedText`` wraps nothing (fact
+    72), so a line wider than its label is not wrapped - it is painted past the edge and
+    the tail never appears - and a peer has no text metrics to ask (fact 46), so the
+    widths here are the ones ``dev/probe_message_width.py`` photographs: 8.93 px a lower
+    case letter, 9.93 px a digit, 13.90 px an ``M``, 8.64 px the characters of that path.
+
+    Hence the two things asserted: the per-character floors are the measured ones, so a
+    constant cannot drift down to the width of the narrowest string somebody happened to
+    measure; and every line of both the plain and the capital-heavy path fits the label
+    ``box_specs`` builds for it, with the air the box is meant to have left over.
     """
     from plan_impress import dialog, swatch
-    path = "/home/derumigny/.config/libreoffice/4/user/planimpress/debug.log"
-    text = "Debug log enabled, writing to:\n%s" % path
-    lines = dialog.box_lines(text)
-    room = dialog._BOX_TEXT_W * swatch.PX_PER_UNIT_X
-    for line in lines:
-        assert len(line) * dialog._BOX_CHAR_W <= room, \
-            "%r is %d characters, about %d px of ink, in a label %d units = %d px wide" \
-            % (line, len(line), len(line) * dialog._BOX_CHAR_W,
-               dialog._BOX_TEXT_W, room)
-    assert path in "".join(lines), "the wrapping lost part of the path: %s" % lines
-    specs, (width, _height) = dialog.box_specs(text, 1)
-    for name, _service, props in specs:
-        if not name.startswith("text"):
-            continue
-        props = dict(props)
-        assert props["PositionX"] + props["Width"] <= width, \
-            "%s is painted outside the window" % name
+    for floor, measured, what in ((dialog._BOX_LOWER_W, 8.93, "a lower case letter"),
+                                  (dialog._BOX_DIGIT_W, 9.93, "a digit"),
+                                  (dialog._BOX_CAP_W, 13.90, "an M")):
+        assert floor >= measured, \
+            "%s measured %s px in the probe, the box budgets %s px" % (
+                what, measured, floor)
+    paths = ("/home/derumigny/.config/libreoffice/4/user/planimpress/debug.log",
+             "/home/derumigny/Documents/plan-impress/loprofile/user/planimpress/debug.log")
+    for path in paths:
+        text = "Debug log enabled, writing to:\n%s" % path
+        lines = dialog.box_lines(text)
+        assert path in "".join(lines), "the wrapping lost part of the path: %s" % lines
+        specs, (width, _height) = dialog.box_specs(text, 1)
+        labels = [dict(props) for name, _service, props in specs
+                  if name.startswith("text")]
+        assert len(labels) == len(lines), (labels, lines)
+        for props in labels:
+            ink = dialog.text_px(props["Label"])
+            room = props["Width"] * swatch.PX_PER_UNIT_X
+            assert ink + 8 <= room, \
+                "%r is %d px of ink in a label %d units = %d px wide: it is painted " \
+                "past the edge" % (props["Label"], ink, props["Width"], room)
+            assert props["PositionX"] >= dialog._BOX_MARGIN, \
+                "%r has no margin: it is painted against the window" % props["Label"]
+            assert props["PositionX"] + props["Width"] <= width, \
+                "%r is painted outside the window" % props["Label"]
+        widest = max(dialog.text_px(line) for line in lines)
+        assert widest + 8 <= (width - 2 * dialog._BOX_MARGIN) * swatch.PX_PER_UNIT_X, \
+            "the box is no wider than its words: %d px of ink in %d px of window" % (
+                widest, width * swatch.PX_PER_UNIT_X)
+    # the box is not the strip of pixels the first version was: air all the way round
+    assert dialog._BOX_MARGIN * swatch.PX_PER_UNIT_X >= 30, \
+        "%d units of margin is %d px" % (dialog._BOX_MARGIN,
+                                         dialog._BOX_MARGIN * swatch.PX_PER_UNIT_X)
 
 
 @test

@@ -61,25 +61,35 @@ def _parent_window(ctx):
 
 
 #: Our own message box, in dialog units (fact 28: one unit is about 2.5 px).
-_BOX_MARGIN = 10
-_BOX_TEXT_W = 120                  # 304 px of text before a line is wrapped
+_BOX_MARGIN = 14                   # air all round: above and left of the text, and
+                                   # below and right of the buttons
 _BOX_LINE_H = 9                    # one line of _FONT text, with air
 _BOX_BUTTON_W = 26
 _BOX_BUTTON_H = 18
 _BOX_BUTTON_GAP = 4
-_BOX_GAP = 10                      # between the text and the buttons
-_BOX_CHARS = 36                    # characters per line at _FONT, see below
+_BOX_GAP = 12                      # between the last line of text and the buttons
+_BOX_CHARS = 36                    # the most characters to put on one line
+_BOX_TEXT_MIN_W = 60               # the narrowest box worth opening, whatever it says
+_BOX_TEXT_MAX_W = 200              # the widest: past that it stops looking like a
+                                   # message and starts looking like a form
+_BOX_TEXT_PAD = 6                  # air between the last glyph and the edge of the box
 
-#: How wide one character of the box's font is, in px, as ``dev/probe_message_width.py``
-#: photographs it: the log path the debug box prints is 240 px over its 30 first
-#: characters (7.8 px a character - a path is lower case, digits, dots and slashes) and
-#: 296 px over 38.  A ``FixedText`` neither wraps nor aligns (fact 72), so a line longer
-#: than its box is not wrapped, it is painted past the edge and disappears: the report
-#: "the debug log enable/disable window message has not enough width, the message is cut
-#: (incomplete path)" was ``_BOX_CHARS`` at 44 - 344 px of words in a 278 px label - and
-#: nothing in the API says so, because a peer has no text metrics (fact 46).  The width
-#: is the measured ink of ``_BOX_CHARS`` characters plus room for a wider glyph.
-_BOX_CHAR_W = 7.8
+#: What one character of the box's font costs, in px, **per class of character** -
+#: ``dev/probe_message_width.py`` photographs thirty of each at ``_FONT``: 8.93 px a
+#: lower case ``a``, 9.93 px a digit, 13.90 px an ``M``, 12.33 px across ``MWI@``, 8.30
+#: px an accented letter, 5.93 px a slash and 7.9 px the log path itself.  They are
+#: rounded *up* by about 5 %: a ``FixedText`` wraps nothing (fact 72), so a line one
+#: pixel too long is not wrapped, it is painted past the edge of its label and the tail
+#: of the path never appears - the report "the debug log enable/disable window message
+#: has not enough width, the message is cut (incomplete path)".  One number for every
+#: character is what made that report come back a second time: the box had been sized on
+#: a path, the narrowest thing a message contains, and the line it cut
+#: (``/home/derumigny/Documents/plan-impre``) is 311 px of ink because of one capital -
+#: 8.64 px a character, where the constant said 7.8.  Nothing on a peer has text metrics
+#: to ask (fact 46), so these are the measurement.
+_BOX_LOWER_W = 9.2
+_BOX_DIGIT_W = 10.5
+_BOX_CAP_W = 14.5
 
 #: com.sun.star.awt.KeyCodes, spelled out because importing ``KeyCodes`` at the top
 #: of the module is what makes extension registration fail (fact 3).
@@ -93,6 +103,41 @@ RESULT_CANCELLED = 0
 RESULT_OK = 1
 RESULT_YES = 6
 RESULT_NO = 2
+
+
+def text_px(line):
+    """What ``line`` costs of ink, in px, at ``_FONT``.
+
+    Three classes of character and no more, because those are the three the probe can
+    photograph thirty of at a time (``dev/probe_message_width.py``); a space counting as
+    a lower case letter is the same width, and being wrong about it by a pixel a
+    character costs nothing but a slightly wider box, which is the safe direction.
+    """
+    return sum(_BOX_CAP_W if character.isupper()
+               else _BOX_DIGIT_W if character.isdigit()
+               else _BOX_LOWER_W for character in line)
+
+
+def _break_long(line):
+    """Split a line whose ink is wider than the widest box worth opening.
+
+    ``_BOX_CHARS`` bounds a line in *characters*, which is the readable measure, and
+    ``_BOX_TEXT_MAX_W`` bounds the box in *px*, which is the honest one: 36 characters of
+    a path are 280 px and 36 capitals are 520 px.  A line that cannot be given a box is
+    broken here rather than painted past its edge (fact 72), which is where the tail of a
+    log path went the first time this was reported.
+
+    The pieces are cut even rather than filled greedily: a greedy split leaves a
+    two-character crumb on the last line, and a name or a path broken into ``XX`` says
+    nothing to anybody.
+    """
+    budget = _BOX_TEXT_MAX_W * swatch.PX_PER_UNIT_X
+    ink = text_px(line)
+    if ink <= budget:
+        return [line]
+    pieces = -(-int(ink) // int(budget))                 # ceil, without importing math
+    size = -(-len(line) // pieces)
+    return [line[start:start + size] for start in range(0, len(line), size)]
 
 
 def box_lines(text, width=_BOX_CHARS):
@@ -110,15 +155,29 @@ def box_lines(text, width=_BOX_CHARS):
     import textwrap
     lines = []
     for paragraph in str(text).split("\n"):
-        lines += textwrap.wrap(paragraph, width, break_long_words=True,
-                               break_on_hyphens=False) or [""]
+        for line in textwrap.wrap(paragraph, width, break_long_words=True,
+                                  break_on_hyphens=False) or [""]:
+            lines += _break_long(line)
     return lines
+
+
+def box_text_width(lines):
+    """How wide the labels have to be for the widest of ``lines``, in dialog units.
+
+    The box is as wide as the words it has to show, between ``_BOX_TEXT_MIN_W`` (so a
+    three-word confirmation still looks like a window) and ``_BOX_TEXT_MAX_W`` (so a long
+    one still looks like a message).  Making this a constant is what cut the log path:
+    one width for every message is one width measured on the wrong string.
+    """
+    widest = max([text_px(line) for line in lines] or [0])
+    units = (widest + 2) / swatch.PX_PER_UNIT_X + _BOX_TEXT_PAD
+    return int(max(_BOX_TEXT_MIN_W, min(_BOX_TEXT_MAX_W, units)))
 
 
 def box_size(text):
     """``(width, height)`` of the box for ``text``, in dialog units."""
     lines = box_lines(text)
-    return (2 * _BOX_MARGIN + _BOX_TEXT_W,
+    return (2 * _BOX_MARGIN + box_text_width(lines),
             2 * _BOX_MARGIN + len(lines) * _BOX_LINE_H + _BOX_GAP + _BOX_BUTTON_H)
 
 
@@ -132,13 +191,15 @@ def box_specs(text, buttons):
     same words in it.
     """
     width, height = box_size(text)
+    lines = box_lines(text)
+    text_w = box_text_width(lines)
     service = "com.sun.star.awt.UnoControlButtonModel"
     specs = []
-    for index, line in enumerate(box_lines(text)):
+    for index, line in enumerate(lines):
         specs.append(("text%d" % index, _FIXED_TEXT, [
             ("Label", line), ("PositionX", _BOX_MARGIN),
             ("PositionY", _BOX_MARGIN + index * _BOX_LINE_H),
-            ("Width", _BOX_TEXT_W), ("Height", _BOX_LINE_H),
+            ("Width", text_w), ("Height", _BOX_LINE_H),
             ("FontHeight", _FONT),
         ]))
     buttons_y = height - _BOX_MARGIN - _BOX_BUTTON_H
