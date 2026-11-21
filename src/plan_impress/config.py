@@ -33,6 +33,14 @@ RECENT_LIMIT = 14
 # dialog shows it in centimetres, the unit Impress's own Position and Size dialog
 # uses.
 
+#: The six fields are a **default**, not an order.  *Insert Section Titles* copies the
+#: position and the look of the first section slide's own box - "copy the position and
+#: formatting of the first section title textbox you see when inserting / updating section
+#: title" - so what these describe is a box there is nothing to copy from: a deck nobody
+#: has styled, or one whose boxes were just removed.  The dialog says so beside each of
+#: them, which is why they are called *Default …* and why there is no toggle for the
+#: choice: one box per deck would be two answers to the same question.
+
 #: Font of the box; "" = the font the deck paints its body text with.
 DEFAULT_SECTION_FONT = ""
 #: Colour of the box: the deck's own muted grey to begin with, because a section
@@ -44,9 +52,6 @@ DEFAULT_SECTION_SIZE = 0.0
 DEFAULT_SECTION_X = None
 DEFAULT_SECTION_Y = None
 DEFAULT_SECTION_WIDTH = None
-#: Take the look from the box on the first slide that already has one: edit that
-#: slide by hand and every other section slide is redrawn to match it.
-DEFAULT_SECTION_FOLLOW_FIRST = False
 
 DEFAULTS = {
     "muted_color": DEFAULT_MUTED_COLOR,
@@ -62,7 +67,6 @@ DEFAULTS = {
     "section_x": DEFAULT_SECTION_X,
     "section_y": DEFAULT_SECTION_Y,
     "section_width": DEFAULT_SECTION_WIDTH,
-    "section_follow_first": DEFAULT_SECTION_FOLLOW_FIRST,
 }
 
 
@@ -201,7 +205,6 @@ def load(ctx):
     settings["section_x"] = _as_length(settings["section_x"])
     settings["section_y"] = _as_length(settings["section_y"])
     settings["section_width"] = _as_length(settings["section_width"])
-    settings["section_follow_first"] = bool(settings["section_follow_first"])
     return settings
 
 

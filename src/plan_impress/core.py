@@ -1891,22 +1891,55 @@ def _section_shapes(doc, master):
     return body if body is not None else title
 
 
-def _read_look(shape):
-    """The character properties of ``shape``, taken from its first paragraph.
+def _portions_of(paragraph):
+    """The text portions of a paragraph; ``[]`` when it will not enumerate."""
+    try:
+        return list(paragraph.createEnumeration())
+    except Exception:
+        return []
 
-    A text shape's own values are only the default underneath its paragraphs (fact
-    55), so the paragraph is asked first - which is what a box the user restyled by
-    hand actually says about itself.
+
+def _look_sources(shape):
+    """What ``shape``'s characters may be asked of, **deepest level first**.
+
+    A text shape paints with the properties of its **text portion**: what the user
+    changes in the sidebar, the toolbar or with ``Ctrl+`` is written onto the portion,
+    while the paragraph keeps the values the last run gave it and the shape only the
+    default underneath (fact 52 and 55 are the same ladder seen from the top).  That is
+    why copying the first box copied its rectangle - geometry really does live on the
+    shape - and not the characters: asked at shape or paragraph level, a box the user
+    made 28 pt bold red still answered what the run that created it had written.
+    ``dev/debug_section_titles.py`` prints the three levels side by side.
     """
-    source = _first_paragraph(shape)
-    if source is None:
-        source = shape
+    sources = []
+    paragraph = _first_paragraph(shape)
+    if paragraph is not None:
+        sources.extend(_portions_of(paragraph)[:1])
+        sources.append(paragraph)
+    if shape is not None:
+        sources.append(shape)
+    return sources
+
+
+def _read_look(shape):
+    """The character properties ``shape`` paints with.
+
+    Asked of the deepest level that answers, because that is the level that paints:
+    see :func:`_look_sources`.  An attribute nothing will answer is simply absent, so a
+    caller can tell "the shape does not have it" from "it says 0".
+    """
+    sources = _look_sources(shape)
     look = {}
     for name in SECTION_BOX_ATTRIBUTES:
-        try:
-            look[name] = source.getPropertyValue(name)
-        except Exception:
-            continue
+        for source in sources:
+            try:
+                value = source.getPropertyValue(name)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            look[name] = value
+            break
     return look
 
 
@@ -2050,6 +2083,12 @@ def _paint_section_box(shape, name, look, rect):
     shape.setString(str(name))
     for paragraph in _paragraphs_of(shape):
         _apply_look(paragraph, look)
+        # and onto the portions: they are what paints (fact 52's ladder, bottom rung),
+        # so a box that was styled by hand - or duplicated from one that was - would
+        # otherwise keep its own size, weight and colour under a shape and a paragraph
+        # that both say something else
+        for portion in _portions_of(paragraph):
+            _apply_look(portion, look)
     # measured once, on a box of a slide whose neighbour had just been duplicated:
     # the paragraph enumeration answered nothing at all, in which case the shape is
     # the only thing that can still be told - ask it again after the text is in
@@ -2127,10 +2166,15 @@ def apply_section_titles(doc, settings, ctx=None):
     new textboxes" asks for.  A box on a slide that has *lost* its section, or on a
     plan slide, is taken away: a re-run leaves nothing of the old layout behind.
 
-    With ``section_follow_first`` the look - font, size, colour, and the rectangle -
-    is taken from the box on the first slide that has one, so restyling that one
-    slide by hand and re-running the command restyles the whole deck; with it off,
-    the settings say and the deck's own body text fills in what they leave empty.
+    The **first box the command can see** - the first slide that has one and is meant
+    to have one - is the template for every other one: "copy the position and
+    formatting of the first section title textbox you see when inserting / updating
+    section title".  Rectangle and characters come from it, so a label styled by hand
+    on one slide styles the deck.  A box found on a title slide or a plan slide cannot
+    set the pattern: it is on its way out, and letting it decide the look would let a
+    leftover dictate the whole deck.  Only where no slide has a box to copy do the
+    ``section_*`` settings say what the box looks like - which is why the dialog calls
+    them *Default …* and why there is no toggle for the choice.
     """
     pages = doc.DrawPages
     sections = get_sections(doc)
@@ -2138,31 +2182,29 @@ def apply_section_titles(doc, settings, ctx=None):
         raise PlanError("This presentation has no sections, so there is no section "
                         "name to write.  Add one with Slide > Insert Section first.")
     master = _master_page(doc, settings.get("master"))
-    follow = bool(settings.get("section_follow_first"))
 
     report = {"written": 0, "created": 0, "updated": 0, "cleared": 0,
               "skipped_plan": 0, "skipped_outside": 0,
               "sections": [entry["name"] for entry in sections
                            if entry.get("indexes")],
-              "master": str(master.Name), "look": "the settings"}
+              "master": str(master.Name), "look": "the default settings"}
 
-    # the slide whose box decides the look when the toggle is on: the first one that
-    # has a box and is meant to have one, so a hand-styled header propagates and a
-    # stray box on a title slide cannot set the pattern
+    # the slide whose box decides the look of every one: the first that has a box and
+    # is meant to have one, so a hand-styled header propagates and a stray box on a
+    # title slide cannot set the pattern
     template_box = None
-    if follow:
-        for index in range(pages.Count):
-            try:
-                page = pages.getByIndex(index)
-            except Exception:
-                continue
-            if _is_plan_page(page) or section_of(sections, index) is None:
-                continue
-            boxes = section_text_shapes(page)
-            if boxes:
-                template_box = boxes[0]
-                report["look"] = "the first section slide's own box"
-                break
+    for index in range(pages.Count):
+        try:
+            page = pages.getByIndex(index)
+        except Exception:
+            continue
+        if _is_plan_page(page) or section_of(sections, index) is None:
+            continue
+        boxes = section_text_shapes(page)
+        if boxes:
+            template_box = boxes[0]
+            report["look"] = "the first section slide's own box"
+            break
 
     deck_body = _section_shapes(doc, master)
     deck_look = _read_look(deck_body) if deck_body is not None else {}
@@ -2188,8 +2230,9 @@ def apply_section_titles(doc, settings, ctx=None):
 
         if template_box is not None:
             # the first box says what every box looks like, right down to where it
-            # sits: that is the point of the toggle, to let one slide be styled by
-            # hand and the rest follow it
+            # sits: one slide is styled by hand and the rest follow it.  Its own
+            # rectangle is used as it stands; only a box that will not say where it
+            # is falls back on where a box is computed to go
             look = _read_look(template_box)
             rect = _box_rect_of(template_box) or _section_box_rect(
                 doc, master, settings, look.get("CharHeight") or _BODY_PT)
@@ -2225,9 +2268,10 @@ def apply_section_titles(doc, settings, ctx=None):
         _paint_section_box(shape, name, look, rect)
         report["written"] += 1
         if template_box is None:
-            # the box just written is the look every later slide copies, when the
-            # deck itself has nothing to say and the toggle is on
-            template_box = shape if follow else None
+            # the deck had nothing to copy, so the box just written - drawn from the
+            # defaults - is what every later slide copies.  Without this the second
+            # slide would be computed again from the settings and the two could drift
+            template_box = shape
     return report
 
 

@@ -33,12 +33,15 @@ FIXTURE = os.path.join(ROOT, "tests", "fixtures", "sections.odp")
 THRESHOLD = 165
 MIN_PIXELS = 3
 
-#: Every control the section rows add, in the order they are painted.
+#: Every control the section rows add, in the order they are painted.  There is no
+#: check box any more: copying the first box is the rule, so the four fields beside it
+#: are what a box without a template is drawn with, and the probe has to show that the
+#: longer *Default …* wording still fits.
 CONTROLS = ("labelSectionColor", "SectionColor", "swatchSectionColor",
             "labelSectionFont", "SectionFont", "labelSectionSize", "SectionSize",
             "labelSectionX", "captionSectionX", "SectionX", "captionSectionY",
             "SectionY", "captionSectionWidth", "SectionWidth",
-            "SectionFollowFirst", "ok", "cancel")
+            "ok", "cancel")
 
 
 def say(text):
@@ -124,8 +127,7 @@ def main():
     window = dialog.SettingsDialog(
         ctx,
         dict(config.DEFAULTS, section_font="Liberation Serif", section_size=18,
-             section_x=1400, section_y=300, section_width=25200,
-             section_follow_first=True),
+             section_x=1400, section_y=300, section_width=25200),
         ["Master 1"])
     window.build()
     try:

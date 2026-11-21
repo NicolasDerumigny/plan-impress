@@ -10,7 +10,7 @@ A LibreOffice Impress extension (`org.devsys.planimpress`) that inserts agenda
 slides: one overview slide before the first section, plus one identical plan
 slide at the top of each section where only the current section is drawn in the
 text colour. A `Plan` menu provides *Insert Plan Slides*, *Remove Plan Slides*,
-*Settings…* and *Toggle Debug Log*.
+*Insert Section Titles*, *Remove Section Titles*, *Settings…* and *Toggle Debug Log*.
 
 ## Layout
 
@@ -816,10 +816,10 @@ pixels no property assertion can see.
    `colour_squares_are_square_and_apart_on_the_screen` (the peers, not the specs) and
    `the_hex_field_is_wide_enough_for_the_value_it_shows`.
 
-### The section-name box (*Section Titles*)
+### The section-name box (*Insert Section Titles*)
 
 `core.apply_section_titles` writes each slide's section name into a plain text box on
-that slide; `core.remove_section_titles` takes the boxes away again. The eight things
+that slide; `core.remove_section_titles` takes the boxes away again. The ten things
 below are why the code is shaped as it is.
 
 86. **A box is recognised by its name's *prefix*, never by the whole name.** Duplicating
@@ -859,11 +859,15 @@ below are why the code is shaped as it is.
     `SubtitleTextShape` only — and that is also what keeps a generated box out of the
     `_deck_placeholder` vote that decides what the deck looks like (fact 54); otherwise
     the second run would take its own label as the template.
-89. **The look goes on the shape *before* `setString` and on its paragraphs after.** The
-    paragraph `setString` creates inherits from the shape, and a paragraph of a text shape
-    may take its characters from the page style instead (fact 52). Measured once, on the
-    neighbour of a slide that had just been duplicated, the paragraph enumeration answered
-    *nothing at all* — so `_paint_section_box` asks the shape again after the text is in.
+89. **The look goes on the shape *before* `setString`, on its paragraphs after, and on
+    each paragraph's portions after that.** The paragraph `setString` creates inherits
+    from the shape, and a paragraph of a text shape may take its characters from the
+    page style instead (fact 52); the portion is the third rung and the one that paints,
+    so a box that was styled by hand — or duplicated from one that was — would keep its
+    own size, weight and colour under a shape and a paragraph that both said something
+    else. Measured once, on the neighbour of a slide that had just been duplicated, the
+    paragraph enumeration answered *nothing at all* — so `_paint_section_box` asks the
+    shape again after the text is in.
 90. **The office's font list lives on a window peer, and asking from a second top-level
     window while a menu popup is up wedges the client.** `Toolkit` has no
     `getDeviceFontEnumeration`, a frame's container window has no `getPeer` at all
@@ -901,9 +905,42 @@ below are why the code is shaped as it is.
     against a hand-edited file, which is why `"1.5"`, `True`, `-4` and `-2.5` are each
     refused there (`_as_length`, `_as_point`).
 
+94. **The first box the command can see is the template, and the settings fields are
+    only what a box is drawn with when there is nothing to copy.** "Copy the position and
+    formatting of the first section title textbox you see when inserting / updating
+    section title" is the rule, unconditional: `apply_section_titles` looks for the first
+    slide that *has* a box and is *meant* to have one, takes its rectangle and its
+    characters, and paints every other box from it — including that box's own height,
+    which is why the shape's `Size` is written rather than left to `TextAutoGrowHeight`.
+    A box on a slide before the first section, or on a plan slide, cannot set the pattern:
+    this very run deletes it, and a leftover from a re-sectioned deck must not dictate the
+    deck's look (`a_stray_box_cannot_set_the_look_of_the_deck`). Where no slide has a box,
+    the `section_*` settings say, and the first box written then becomes what the later
+    ones copy, so one run cannot produce two different-looking labels. There is
+    deliberately **no toggle** for the choice and the dialog calls the four fields
+    *Default colour / font / size / X, Y, W* — a field that silently does nothing is what
+    reads as "the option does not work". `report["look"]` says which of the two paths ran
+    ("the first section slide's own box" or "the default settings"), because the two are
+    not distinguishable from the deck alone.
+95. **A user styles text on its *portion*, so a box is copied from and written to there.**
+    `box.CharHeight = 28` is what a macro does and only reaches the default underneath
+    everything; what the sidebar, the toolbar and `Ctrl+` change — and what the office then
+    paints — is the first portion of the paragraph, which is why copying the box copied the
+    *position* (geometry really does live on the shape) and lost the font, the size, the
+    weight and the colour: asked at shape or paragraph level, a box the user had made 28 pt
+    bold red still answered what the run that created it had written. `_look_sources`
+    therefore asks portion → paragraph → shape and takes the first that answers (the
+    reverse of fact 55's "ask the paragraph, the shape is only the default", which is the
+    same ladder from the top: the master's sample text has no hand formatting on it, the
+    user's label does), and `_paint_section_box` writes all three rungs (fact 89). The
+    witness styles a box the way the editor does and asserts the copy at portion level —
+    `section_titles_copy_the_first_box_the_command_sees`; `dev/debug_section_titles.py`
+    prints shape, paragraph and portion side by side, which is the only way to tell "the
+    copy never ran" from "the copy read the wrong level".
+
 ### Driving the office with `xdotool`
 
-94. **A menu click left open wedges the office for every later client.** `xdotool
+96. **A menu click left open wedges the office for every later client.** `xdotool
     mousemove X Y click 1` on the *Plan* menu takes a pointer grab, and the grab survives
     the probe that asked for it — killing such a probe half way through leaves the popup
     open and the office then answers nothing more that touches a document: the next script
@@ -1018,18 +1055,27 @@ after the position it now holds, and with the characters on its paragraph as muc
 its shape), `section_titles_are_painted_without_a_plate` (a box that has been given a
 solid fill and a frame comes back flat from the next run, where it stood being unchanged),
 `re_running_section_titles_updates_the_boxes_and_adds_none`
-(the same shapes, moved where the settings now say), `section_titles_survive_a_duplicated_slide`
+(the same shapes, moved where the first box now sits), `section_titles_survive_a_duplicated_slide`
 (the request's own case: duplicate a slide and the copy's box is found and rewritten,
 not duplicated), `section_titles_leave_a_slide_without_a_section_alone` (nothing before
 the first section, and nothing left behind when a slide leaves one),
-`section_titles_are_not_drawn_on_the_plan_slides`, `remove_section_titles_loses_nothing_of_the_deck`
-and `section_titles_copy_the_first_slide_when_the_toggle_says_so`. What the label is
+`section_titles_are_not_drawn_on_the_plan_slides`, `remove_section_titles_loses_nothing_of_the_deck`,
+`section_titles_copy_the_first_box_the_command_sees` (fact 94's rule and fact 95's level:
+the box is styled the way the *editor* styles text — on its portion — and every other box
+has to come out of the run saying the same `CharHeight`, `CharColor`, `CharFontName`,
+`CharWeight` and `CharPosture` **on its own portion**, while the four *Default …* settings
+are shown not to overrule it and to speak again once the boxes are removed), and
+`a_stray_box_cannot_set_the_look_of_the_deck` (the box being deleted by this run is not
+the template either). What the label is
 *drawn as* is checked on the rendered page: `section_titles_do_not_print_through_the_heading`
 exports a PDF and compares the two bands of glyphs with `pdftotext -bbox` (fact 87).
 On the screen: `the_section_fields_are_on_the_settings_dialog` (font combo, hex field,
-point size, the three position fields, the toggle, none of them overlapping and all
-inside the window) and `the_position_fields_speak_centimetres_and_the_file_does_not`
+point size, the three position fields, none of them overlapping and all inside the window,
+no check box anywhere because copying is not a choice, and every one of the four labels
+saying *Default* so a value the copied box overrules is not read as a broken option) and
+`the_position_fields_speak_centimetres_and_the_file_does_not`
 (fact 93, both directions and the rubbish cases), plus `the_section_commands_are_on_the_menu`
+(pinned per URL: *Insert Section Titles* belongs to the inserting URL)
 and `menu_dispatch_writes_section_titles` for the two Jobs a click reaches.
 
 ### Looking at the result
@@ -1082,7 +1128,9 @@ that never ran.
 The section-name box has three of its own. `dev/debug_section_titles.py` prints what the
 office really says about the boxes: every slide's section, each box's name (this is where
 a duplicated slide's `PlanImpress:SectionText:Slide: 1` was seen, fact 86), its rectangle
-and its characters at shape *and* paragraph level. `dev/render_section_titles.py` inserts
+and its characters at shape, paragraph *and* portion level — the third column is what
+paints, and it is how "the position copies but the font does not" was told from a copy that
+never ran (fact 95). `dev/render_section_titles.py` inserts
 the labels, exports a PDF and prints the bands of glyphs `pdftotext -bbox` answers with —
 the only witness for "the label does not print through the heading" (fact 87).
 `dev/probe_section_fields.py` photographs the settings dialog and prints, per control of

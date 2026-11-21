@@ -101,8 +101,8 @@
                                 </node>
                                 <node oor:name="mm41" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
-                                        <value xml:lang="en-US">Section Titles</value>
-                                        <value xml:lang="fr">Titres de section</value>
+                                        <value xml:lang="en-US">Insert Section Titles</value>
+                                        <value xml:lang="fr">Insérer des titres de section</value>
                                     </prop>
                                     <prop oor:name="URL" oor:type="xs:string">
                                         <value>service:org.devsys.planimpress.SectionTitles?section_titles</value>

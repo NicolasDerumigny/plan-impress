@@ -350,23 +350,35 @@ _ROWS = (
     ("Master", "Master slide:"),
 )
 
-#: The rows *Section Titles* contributes, in the same ``(name, label, kind)``
-#: shape.  Everything here is optional in the same sense as the master slide
-#: setting: an empty field means "ask the deck", which is what a deck nobody has
-#: styled gets.
+#: The rows the section label adds, in the same ``(name, label, kind)`` shape as
+#: :data:`_ROWS`.  Everything here is optional in the same sense as the master slide
+#: setting: an empty field means "ask the deck", which is what a deck nobody has styled
+#: gets.
 #:
-#: ``position`` is one row with three fields - X, Y and the width, in centimetres,
-#: the unit Impress's own *Position and Size* dialog uses; the settings file keeps
-#: 1/100 mm, which is what every geometry property in :mod:`plan_impress.core`
-#: wants, and one line of conversion (`cm_to_units`) joins the two.
-#: ``check`` is a check box, which carries its own label and so has no separate one.
+#: They are called *Default …* because that is what they are: *Insert Section Titles*
+#: copies the position and the look of the first section slide's own box, so a value here
+#: is used only when there is nothing to copy - a deck nobody has styled, or one whose
+#: boxes were just removed.  Saying so in the label is what replaced the toggle: a field
+#: that silently does nothing is the sort of thing that reads as "the option does not
+#: work".  The wording has to fit the 202 px the label box paints - a `FixedText` wraps
+#: nothing (fact 72) - so it is no longer than the wording it replaced, and the unit each
+#: field holds is part of its name because the file keeps 1/100 mm while the fields speak
+#: centimetres (fact 93).
+#:
+#: ``position`` is one row with three fields - X, Y and the width - because that is how
+#: Impress's own *Position and Size* dialog shows them; one line of conversion
+#: (`cm_to_units`) joins the two units.
 _SECTION_ROWS = (
-    ("SectionColor", "Section colour (hex):", "colour"),
-    ("SectionFont", "Section font:", "font"),
-    ("SectionSize", "Section size (pt):", "text"),
-    ("SectionPosition", "Position and size (cm):", "position"),
-    ("SectionFollowFirst", "Take the look from the first section slide", "check"),
+    ("SectionColor", "Default colour (hex):", "colour"),
+    ("SectionFont", "Default font:", "font"),
+    ("SectionSize", "Default size (pt):", "text"),
+    ("SectionPosition", "Default X, Y, W (cm):", "position"),
 )
+
+#: What the four fields are for, said where a user will read it.
+_DEFAULT_HELP = ("The command copies the position and the look of the first section "
+                 "slide's own box.  This is what a box is drawn with when there is "
+                 "nothing to copy: no box on any section slide yet.")
 
 #: The three fields of the position row: ``(setting, what it is called on screen)``.
 _POSITION_FIELDS = (("SectionX", "X"), ("SectionY", "Y"), ("SectionWidth", "W"))
@@ -451,7 +463,6 @@ _BUTTON = "com.sun.star.awt.UnoControlButtonModel"
 #: the panel and the message box (fact 65) - ``dev/probe_fonts.py`` prints which
 #: properties each has.
 _COMBOBOX = "com.sun.star.awt.UnoControlComboBoxModel"
-_CHECKBOX = "com.sun.star.awt.UnoControlCheckBoxModel"
 
 
 def font_names(descriptors):
@@ -622,19 +633,11 @@ def _field_specs(values, masters, fonts=None):
 
     for index, (name, text, kind) in enumerate(_SECTION_ROWS):
         y = _FIRST_ROW_Y + (len(_ROWS) + index) * _ROW_STEP
-        if kind == "check":
-            # a check box carries its own words, so it gets no label beside it
-            specs.append((name, _CHECKBOX, [
-                ("Label", text), ("PositionX", _LABEL_X), ("PositionY", y),
-                ("Width", DIALOG_WIDTH - 2 * _MARGIN), ("Height", _FIELD_H),
-                ("FontHeight", _FONT),
-                ("State", 1 if values.get(name) else 0),
-            ]))
-            continue
         if kind != "position":
             label(name, text, y)
         if kind == "colour":
-            field(name, _EDIT, [("Text", values.get(name, ""))], y)
+            field(name, _EDIT, [("Text", values.get(name, "")),
+                                ("HelpText", _DEFAULT_HELP)], y)
             swatch_of(name, y, config.hex_to_color(values.get(name, ""), 0))
         elif kind == "font":
             # an editable combo: the office's own font list when the office will
@@ -644,12 +647,14 @@ def _field_specs(values, masters, fonts=None):
             field(name, _COMBOBOX, [
                 ("StringItemList", tuple(fonts or ())), ("Dropdown", True),
                 ("Text", str(values.get(name) or "")),
-                ("HelpText", "Leave empty for the font the deck's body text uses"),
+                ("HelpText", "Leave empty for the font the deck's body text uses. "
+                             + _DEFAULT_HELP),
             ], y)
         elif kind == "text":
             field(name, _EDIT, [
                 ("Text", str(values.get(name, ""))),
-                ("HelpText", "Leave empty for the size the deck's body text uses"),
+                ("HelpText", "Leave empty for the size the deck's body text uses. "
+                             + _DEFAULT_HELP),
             ], y)
         else:                                        # the three position fields
             # the row's caption is named after the *first* of its three fields, so
@@ -665,7 +670,7 @@ def _field_specs(values, masters, fonts=None):
                 specs.append((which, _EDIT, [
                     ("Text", str(values.get(which, ""))),
                     ("HelpText", "In centimetres; empty = where the deck's own "
-                                 "content box is"),
+                                 "content box is. " + _DEFAULT_HELP),
                     ("PositionX", x + _NUM_LABEL_W), ("PositionY", y),
                     ("Width", _NUM_W), ("Height", _FIELD_H), ("FontHeight", _FONT),
                 ]))
@@ -757,7 +762,6 @@ class SettingsDialog(object):
             "SectionX": units_to_cm(settings.get("section_x")),
             "SectionY": units_to_cm(settings.get("section_y")),
             "SectionWidth": units_to_cm(settings.get("section_width")),
-            "SectionFollowFirst": bool(settings.get("section_follow_first")),
         }
         self.dialog = None
         self.model = None
@@ -1162,16 +1166,6 @@ class SettingsDialog(object):
         value = cm_to_units(text)
         return value if value is not None else fallback
 
-    def _checked(self, name, fallback):
-        """Whether a check box is on; the model is the fallback, as everywhere."""
-        for getter in (lambda: self.control(name).getState(),
-                       lambda: self.control_model(name).getPropertyValue("State")):
-            try:
-                return bool(getter())
-            except Exception:
-                continue
-        return bool(fallback)
-
     def result(self):
         """Read the control values back into a settings dict."""
         if self.dialog is None:
@@ -1203,8 +1197,6 @@ class SettingsDialog(object):
             "section_y": self._length("SectionY", self.settings.get("section_y")),
             "section_width": self._length("SectionWidth",
                                           self.settings.get("section_width")),
-            "section_follow_first": self._checked(
-                "SectionFollowFirst", self.settings.get("section_follow_first")),
         }
 
     def dispose(self):

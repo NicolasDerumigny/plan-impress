@@ -1565,7 +1565,7 @@ def dialog_build_and_read_back():
                           "section_color": config.DEFAULT_SECTION_COLOR,
                           "section_font": "", "section_size": 0.0,
                           "section_x": None, "section_y": None,
-                          "section_width": None, "section_follow_first": False}, result
+                          "section_width": None}, result
         # typing an invalid colour must fall back to the stored one
         window.control("TextColor").setText("zzzzzz")
         assert window.result()["text_color"] == 0x000000
@@ -2492,6 +2492,36 @@ def _only_box(page):
     return boxes[0]
 
 
+def _character_of(value):
+    """One character property as something comparable.
+
+    pyuno answers some of them as an ``Enum`` instance whose ``value`` is the **name** -
+    ``CharPosture`` written as ``2`` reads back as ``ITALIC`` (fact 92) - so a written
+    int compared with a read object is never equal.  Both sides of every comparison
+    below go through here.
+    """
+    return str(getattr(value, "value", value))
+
+
+def _style_box_like_the_editor(box, **attributes):
+    """Change a box's characters the way Impress does: on the text **portion**.
+
+    ``box.CharHeight = 28`` is what a macro does, and it only reaches the default
+    underneath everything: what the sidebar, the toolbar and ``Ctrl+`` change is the
+    portion of the paragraph, and the portion is what the office paints (fact 52's
+    ladder, bottom rung).  A copy rule that reads the *shape* therefore passes a test
+    that styles the shape and still loses the user's font, size and colour on the
+    screen - which is exactly the report this is here for.
+    """
+    paragraphs = core._paragraphs_of(box)
+    assert paragraphs, "the box has no paragraph to style"
+    portions = core._portions_of(paragraphs[0])
+    assert portions, "the box has no text portion to style"
+    for name, value in attributes.items():
+        setattr(portions[0], name, value)
+    return portions[0]
+
+
 def _duplicate_page(doc, ctx, index):
     """Duplicate slide ``index`` the way the menu does; returns the copy's index.
 
@@ -2761,20 +2791,22 @@ def re_running_section_titles_updates_the_boxes_and_adds_none():
         assert [doc.DrawPages.getByIndex(i).Count for i in
                 range(doc.DrawPages.Count)] == shapes
 
-        # and the position the settings name is written to the boxes that already
-        # exist: a re-run has to move them, not leave them where the last run put
-        # them - which is the whole point of *Section size / position* being editable
-        moved = dict(config.DEFAULTS, section_x=4000, section_y=900,
-                     section_width=18000)
-        core.apply_section_titles(doc, moved, ctx)
+        # and a re-run moves the boxes it made.  What moves them is the *first* box:
+        # the command copies where that one sits, so moving it by hand and running
+        # again moves the deck (the position fields of the option screen are what a
+        # deck with no box to copy is drawn with - asserted in
+        # section_titles_copy_the_first_box_the_command_sees)
+        first = _only_box(doc.DrawPages.getByIndex(0))
+        first.Position = core._point(4000, 900)
+        first.Size = core._size(18000, 700)
+        core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
         for index, _name, boxes in _section_boxes(doc):
             if not boxes:
                 continue
-            assert core._box_rect_of(boxes[0])[0] == 4000, \
-                "slide %d is still at %r, the settings say x=4000" % (
-                    index, core._box_rect_of(boxes[0]))
             rect = core._box_rect_of(boxes[0])
-            assert rect[1] == 900, "slide %d: y is %d, the settings say 900" % (
+            assert rect[0] == 4000, \
+                "slide %d is still at %r, the first box is at x=4000" % (index, rect)
+            assert rect[1] == 900, "slide %d: y is %d, the first box says 900" % (
                 index, rect[1])
             assert rect[2] == 18000, "slide %d: the width is %d, not 18000" % (
                 index, rect[2])
@@ -2950,52 +2982,144 @@ def remove_section_titles_loses_nothing_of_the_deck():
 
 
 @test
-def section_titles_copy_the_first_slide_when_the_toggle_says_so():
-    """With *take the look from the first section slide*, one slide styles them all.
+def section_titles_copy_the_first_box_the_command_sees():
+    """One box styles them all: the first the command can see is the template.
 
-    The toggle exists so the box can be styled where it is seen: restyle the label
-    on the first section slide in the editor, run the command, and every other slide
-    is redrawn to match it - font, size, colour and the rectangle.  Without it the
-    settings say and the deck's own body text fills in the blanks.
+    "copy the position and formatting of the first section title textbox you see when
+    inserting / updating section title".  The rule has no switch: restyle the label on
+    one section slide in the editor, run the command, and every other slide is redrawn
+    to match it - font, size, colour and the rectangle.  The four *Default …* settings
+    are therefore inert while such a box exists, which is asserted here too, and they
+    come back into play when there is nothing to copy - a deck whose boxes have just
+    been removed.
     """
     ctx = lo.connect()
     desk = lo.desktop(ctx)
     doc = lo.open_doc(desk, FIXTURE, hidden=False)
+    defaults = dict(config.DEFAULTS, section_size=14, section_color=0x00FF00,
+                    section_font="Liberation Mono")
     try:
-        settings = dict(config.DEFAULTS, section_follow_first=True)
-        core.apply_section_titles(doc, settings, ctx)
+        # nothing to copy yet: the defaults say, and the slides agree with each other
+        report = core.apply_section_titles(doc, defaults, ctx)
+        assert report["look"] == "the default settings", report
+        boxes = _section_boxes(doc)
+        assert boxes, "the command wrote no box at all"
+        painted = core._box_rect_of(boxes[0][2][0])
+        for index, _name, page_boxes in boxes:
+            assert core._box_rect_of(page_boxes[0]) == painted, \
+                "slide %d sits at %r, slide 0 at %r" % (
+                    index, core._box_rect_of(page_boxes[0]), painted)
+            look = core._read_look(page_boxes[0])
+            assert abs(float(look["CharHeight"]) - 14.0) < 0.6, (index, look)
+            assert int(look["CharColor"]) & 0xFFFFFF == 0x00FF00, (index, look)
+            assert str(look["CharFontName"]) == "Liberation Mono", (index, look)
+
+        # what the user does in the editor - and the editor writes the characters on
+        # the text portion, not on the shape, so this is the case a copy rule that only
+        # reads the shape loses (see _style_box_like_the_editor)
         first = _only_box(doc.DrawPages.getByIndex(0))
-        # what the user does in the editor: a bigger serif label, moved up
-        first.CharHeight = 28
-        first.CharColor = 0xFF0000
-        first.CharFontName = "Liberation Serif"
+        portion = _style_box_like_the_editor(
+            first, CharHeight=28, CharColor=0xFF0000, CharFontName="Liberation Serif",
+            CharWeight=150, CharPosture=2)
         first.Position = core._point(900, 1200)
+        # one slide that was styled *differently*: its own portion says something else,
+        # and the run has to overwrite that, not merely the shape above it - the case a
+        # duplicated or once-hand-styled slide is
+        with_boxes = [page_boxes for _i, _n, page_boxes in _section_boxes(doc)
+                      if page_boxes]
+        _style_box_like_the_editor(with_boxes[-1][0], CharHeight=9, CharColor=0x00FF00,
+                                   CharFontName="DejaVu Sans Mono", CharWeight=100,
+                                   CharPosture=0)
         wanted = core._box_rect_of(first)
         look = core._read_look(first)
+        # the witness that this really is the hard case: what was written is on the
+        # portion, and reading the shape or the paragraph would answer something else
+        for attribute in ("CharHeight", "CharColor", "CharFontName", "CharWeight",
+                          "CharPosture"):
+            assert _character_of(look.get(attribute)) == _character_of(
+                getattr(portion, attribute)), \
+                "reading the styled box answers %s=%r, its own portion says %r" % (
+                    attribute, look.get(attribute), getattr(portion, attribute))
 
-        report = core.apply_section_titles(doc, settings, ctx)
+        report = core.apply_section_titles(doc, defaults, ctx)
         assert report["look"] == "the first section slide's own box", report
-        for index, _name, boxes in _section_boxes(doc):
-            box = boxes[0]
+        for index, _name, page_boxes in _section_boxes(doc):
+            if not page_boxes:
+                continue
+            box = page_boxes[0]
             assert core._box_rect_of(box) == wanted, \
                 "slide %d sits at %r, not at the first box's %r" % (
                     index, core._box_rect_of(box), wanted)
             other = core._read_look(box)
-            for attribute in ("CharHeight", "CharColor", "CharFontName"):
-                assert other.get(attribute) == look.get(attribute), \
+            target = core._portions_of(core._paragraphs_of(box)[0])[0]
+            for attribute in ("CharHeight", "CharColor", "CharFontName",
+                              "CharWeight", "CharPosture"):
+                assert _character_of(other.get(attribute)) == _character_of(
+                    look.get(attribute)), \
                     "slide %d: %s is %r, the first box says %r" % (
                         index, attribute, other.get(attribute), look.get(attribute))
+                # and on the level that actually paints: a copy that stopped at the
+                # shape would leave this slide's own portion saying what it used to
+                assert _character_of(getattr(target, attribute)) == _character_of(
+                    look.get(attribute)), \
+                    "slide %d paints %s=%r, the first box paints %r" % (
+                        index, attribute, getattr(target, attribute),
+                        look.get(attribute))
 
-        # with the toggle off, the settings win instead
-        settings = dict(settings, section_follow_first=False, section_size=14,
-                        section_color=0x00FF00, section_font="Liberation Mono")
-        report = core.apply_section_titles(doc, settings, ctx)
-        assert report["look"] == "the settings", report
-        for index, _name, boxes in _section_boxes(doc):
-            look = core._read_look(boxes[0])
+        # and a value typed into the option screen does *not* overrule the box that is
+        # there: 14 pt, green and 40 mm across all say so and none of them is obeyed
+        report = core.apply_section_titles(
+            doc, dict(defaults, section_x=4000, section_y=900), ctx)
+        assert report["look"] == "the first section slide's own box", report
+        for index, _name, page_boxes in _section_boxes(doc):
+            assert core._box_rect_of(page_boxes[0]) == wanted, \
+                "slide %d: the settings moved a box the command should have copied" % index
+            assert abs(float(core._read_look(page_boxes[0])["CharHeight"]) - 28.0) < 0.6
+
+        # take the boxes away and there is nothing to copy: the defaults speak again
+        assert core.remove_section_titles(doc) > 0
+        report = core.apply_section_titles(doc, defaults, ctx)
+        assert report["look"] == "the default settings", report
+        for index, _name, page_boxes in _section_boxes(doc):
+            look = core._read_look(page_boxes[0])
             assert abs(float(look["CharHeight"]) - 14.0) < 0.6, (index, look)
             assert int(look["CharColor"]) & 0xFFFFFF == 0x00FF00, (index, look)
             assert str(look["CharFontName"]) == "Liberation Mono", (index, look)
+    finally:
+        lo.close(doc)
+
+
+@test
+def a_stray_box_cannot_set_the_look_of_the_deck():
+    """A box on a slide that is meant to have none is on its way out - and silent.
+
+    The first box the command sees is the template, so a leftover from a deck that was
+    re-sectioned must not be allowed to decide what every section slide looks like:
+    it is being deleted by this very run.
+    """
+    ctx = lo.connect()
+    desk = lo.desktop(ctx)
+    doc = lo.new_doc(desk, hidden=False)
+    try:
+        doc.DrawPages.getByIndex(0).Name = "title"
+        for name in ("welcome", "agenda-notes", "diagram"):
+            doc.DrawPages.insertNewByIndex(doc.DrawPages.Count).Name = name
+        core.set_sections(doc, [("Introduction", ["welcome", "agenda-notes"]),
+                                ("Demo", ["diagram"])])
+        # a hand-styled box on the cover, which belongs to no section
+        stray = core._new_section_box(doc, doc.DrawPages.getByIndex(0),
+                                      core.section_text_name(0))
+        stray.CharHeight = 40
+        stray.CharColor = 0xFF0000
+
+        report = core.apply_section_titles(doc, dict(config.DEFAULTS), ctx)
+        assert report["look"] == "the default settings", \
+            "the cover slide's stray box set the look of the deck"
+        assert core.section_text_shapes(doc.DrawPages.getByIndex(0)) == [], \
+            "the stray box survived the run that should have taken it away"
+        for index in (1, 2, 3):
+            look = core._read_look(_only_box(doc.DrawPages.getByIndex(index)))
+            assert int(look["CharColor"]) & 0xFFFFFF != 0xFF0000, (index, look)
     finally:
         lo.close(doc)
 
@@ -3027,17 +3151,21 @@ def the_section_commands_are_on_the_menu():
         if url is not None and str(url.text or "").startswith(
                 "service:org.devsys.planimpress."):
             by_url.setdefault(str(url.text), []).append(props)
-    wanted = ("service:org.devsys.planimpress.SectionTitles?section_titles",
-              "service:org.devsys.planimpress.RemoveSectionTitles"
-              "?remove_section_titles")
-    for url in wanted:
+    wanted = {
+        # the label is pinned per URL: the report was that the item reads as the
+        # command it is, so *Insert Section Titles* names the inserting one and a
+        # shared list of both strings would let them be swapped
+        "service:org.devsys.planimpress.SectionTitles?section_titles":
+            "Insert Section Titles",
+        "service:org.devsys.planimpress.RemoveSectionTitles?remove_section_titles":
+            "Remove Section Titles",
+    }
+    for url, title in wanted.items():
         nodes = by_url.get(url) or []
         assert nodes, "no menu item for %s: %s" % (url, sorted(by_url))
         titled = [props for props in nodes if props.get("Title") is not None]
         assert titled, "%s has no Title, so the menu would show a blank row" % url
-        assert str(titled[0]["Title"].text) in ("Section Titles",
-                                                "Remove Section Titles"), \
-            titled[0]["Title"].text
+        assert str(titled[0]["Title"].text) == title, titled[0]["Title"].text
         assert any(props.get("Target") is not None
                    and str(props["Target"].text) == "_self" for props in nodes), \
             "%s needs Target=_self (fact 7)" % url
@@ -3062,23 +3190,26 @@ def the_section_fields_are_on_the_settings_dialog():
     """The option screen can say everything the box can be told.
 
     "in the option, adds new field for the font, color, size and coordinate of the
-    textbox" - plus the toggle that takes the look from the first slide.  The
-    geometry is checked here rather than in a screenshot because the point is which
-    fields exist, that they are laid out apart, and that the two that hold a number
-    say what unit they are in: a field called "X" that means centimetres while the
-    file stores 1/100 mm is how a label ends up off the slide.
+    textbox" - and each of the four is called *Default …* because that is what it is:
+    the command copies the position and the look of the first section slide's own box,
+    so a field here only speaks when there is nothing to copy.  A toggle for that would
+    be a second answer to the same question, so there is none either, which is asserted
+    below alongside the labels.  The geometry is checked here rather than in a screenshot
+    because the point is which fields exist, that they are laid out apart, and that the
+    two that hold a number say what unit they are in: a field called "X" that means
+    centimetres while the file stores 1/100 mm is how a label ends up off the slide.
     """
     from plan_impress import dialog
     values = {"MutedColor": "B0B0B0", "TextColor": "000000", "Title": "Plan",
               "master": "Default", "SectionColor": "1F4E79", "SectionFont": "Arial",
               "SectionSize": "18", "SectionX": "1.4", "SectionY": "0.2",
-              "SectionWidth": "25.2", "SectionFollowFirst": True}
+              "SectionWidth": "25.2"}
     specs = dialog._field_specs(values, ["Default"], ["Liberation Sans", "Arial"])
     by_name = {name: (service, dict(props)) for name, service, props in specs}
     for expected in ("labelSectionColor", "SectionColor", "swatchSectionColor",
                      "labelSectionFont", "SectionFont", "labelSectionSize",
                      "SectionSize", "labelSectionX", "SectionX", "SectionY",
-                     "SectionWidth", "SectionFollowFirst"):
+                     "SectionWidth"):
         assert expected in by_name, (expected, sorted(by_name))
     assert by_name["SectionFont"][0].endswith("UnoControlComboBoxModel"), \
         "the font field has to be editable: any name can be typed"
@@ -3087,8 +3218,20 @@ def the_section_fields_are_on_the_settings_dialog():
     assert by_name["SectionColor"][1]["Text"] == "1F4E79"
     assert by_name["swatchSectionColor"][1]["BackgroundColor"] == 0x1F4E79
     assert by_name["SectionSize"][1]["Text"] == "18"
-    assert by_name["SectionFollowFirst"][0].endswith("UnoControlCheckBoxModel")
-    assert by_name["SectionFollowFirst"][1]["State"] == 1, "the toggle is not shown on"
+    # no toggle: copying the first box is the rule, not a choice somebody has to
+    # think of turning on
+    for name, service, _props in specs:
+        assert "CheckBox" not in service, "%s is a check box that should not exist" % name
+        assert "FollowFirst" not in name, name
+    # ... and the four fields say for themselves that they are only a default, so a
+    # value that the copied box overrules does not read as "the option does not work"
+    for name in ("labelSectionColor", "labelSectionFont", "labelSectionSize",
+                 "labelSectionX"):
+        assert "default" in by_name[name][1]["Label"].lower(), \
+            "%s says %r" % (name, by_name[name][1]["Label"])
+    for name in ("SectionColor", "SectionFont", "SectionSize", "SectionX"):
+        assert "copy" in by_name[name][1]["HelpText"].lower(), \
+            "%s does not say when its value is used" % name
     # the number fields say what they hold
     assert "cm" in by_name["labelSectionX"][1]["Label"].lower(), \
         by_name["labelSectionX"][1]["Label"]
@@ -3138,8 +3281,7 @@ def the_position_fields_speak_centimetres_and_the_file_does_not():
 
     stored = {"section_x": "1400", "section_y": -2, "section_z": 5,
               "section_size": "nonsense", "section_width": 25200.6,
-              "section_font": "  Arial  ", "section_color": "zzz",
-              "section_follow_first": 1}
+              "section_font": "  Arial  ", "section_color": "zzz"}
     folder = os.path.join(ROOT, "out", "profile-section-coerce")
     os.makedirs(folder, exist_ok=True)
     fake_ctx = FakeContext(folder)
@@ -3153,19 +3295,17 @@ def the_position_fields_speak_centimetres_and_the_file_does_not():
     assert settings["section_width"] == 25201, settings
     assert settings["section_font"] == "Arial", settings
     assert settings["section_color"] == config.DEFAULT_SECTION_COLOR, settings
-    assert settings["section_follow_first"] is True, settings
     assert config.load(FakeContext(folder))["section_x"] == 1400
 
     # the loader is the only guard: a hand-edited file can hold anything
     with open(config.settings_path(fake_ctx), "w") as handle:
         json.dump({"section_x": True, "section_y": "1.5", "section_size": -4,
-                   "section_width": -2.5, "section_follow_first": "yes"}, handle)
+                   "section_width": -2.5}, handle)
     settings = config.load(fake_ctx)
     assert settings["section_x"] is None, "a boolean is not a coordinate"
     assert settings["section_y"] == 2, settings
     assert settings["section_size"] == 0.0, settings
     assert settings["section_width"] is None, "-2.5 in the file is not a width"
-    assert settings["section_follow_first"] is True, settings
 
 
 @test
@@ -3491,7 +3631,7 @@ def addons_registered():
                      "service:org.devsys.planimpress.SectionTitles?section_titles",
                      "service:org.devsys.planimpress.RemoveSectionTitles"
                      "?remove_section_titles",
-                     "Section Titles", "Remove Section Titles",
+                     "Insert Section Titles", "Remove Section Titles",
                      "icons/section_16.png", "icons/section_remove_26.png",
                      "private:separator", "Plan", "icons/plan_16.png"):
         assert expected in joined, "missing from Addons.xcu: %s" % expected
