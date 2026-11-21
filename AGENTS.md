@@ -819,7 +819,7 @@ pixels no property assertion can see.
 ### The section-name box (*Insert Section Titles*)
 
 `core.apply_section_titles` writes each slide's section name into a plain text box on
-that slide; `core.remove_section_titles` takes the boxes away again. The ten things
+that slide; `core.remove_section_titles` takes the boxes away again. The eleven things
 below are why the code is shaped as it is.
 
 86. **A box is recognised by its name's *prefix*, never by the whole name.** Duplicating
@@ -909,9 +909,10 @@ below are why the code is shaped as it is.
     only what a box is drawn with when there is nothing to copy.** "Copy the position and
     formatting of the first section title textbox you see when inserting / updating
     section title" is the rule, unconditional: `apply_section_titles` looks for the first
-    slide that *has* a box and is *meant* to have one, takes its rectangle and its
-    characters, and paints every other box from it — including that box's own height,
-    which is why the shape's `Size` is written rather than left to `TextAutoGrowHeight`.
+    slide that *has* a box and is *meant* to have one, takes its rectangle, its
+    characters and its vertical anchoring, and paints every other box from it — including
+    that box's own height, which is why the shape's `Size` is written rather than left
+    to `TextAutoGrowHeight`.
     A box on a slide before the first section, or on a plan slide, cannot set the pattern:
     this very run deletes it, and a leftover from a re-sectioned deck must not dictate the
     deck's look (`a_stray_box_cannot_set_the_look_of_the_deck`). Where no slide has a box,
@@ -938,9 +939,26 @@ below are why the code is shaped as it is.
     prints shape, paragraph and portion side by side, which is the only way to tell "the
     copy never ran" from "the copy read the wrong level".
 
+96. **A label has one vertical alignment, it is `TextVerticalAdjust`, and it lives on
+    the shape.** The three spellings of "where the lines sit in the box" are not
+    interchangeable: `TextAnchor` (awt) and `TextAnchorKind` (drawing) - what
+    :func:`_make_text_shape` writes on a *presentation* placeholder (fact 22) - raise
+    ``UnknownPropertyException`` on a `TextShape` at every level, shape, paragraph and
+    portion alike, and only `TextVerticalAdjust` exists, on the **shape** alone. That is
+    the opposite of the characters (fact 95), which is why the copy reads them with two
+    calls: `_read_look` down the ladder, `_read_anchor` asking the one rung that answers.
+    The value also has to be written **after** the block that pins a fresh box to TOP, or
+    the run pulls every hand-aligned label back to the top - the report "vertical
+    alignment is not conserved", measured as the copied box saying `CENTER` while its
+    neighbours said `TOP`. TOP stays the *default*, which is all fact 22 ever asked for:
+    it is what a box gets when there is nothing to copy, and it is asserted as such.
+    `dev/probe_anchor.py` prints each spelling at each level and what writing one does to
+    the others, which is how the two refused properties were ruled out instead of
+    guessed at.
+
 ### Driving the office with `xdotool`
 
-96. **A menu click left open wedges the office for every later client.** `xdotool
+97. **A menu click left open wedges the office for every later client.** `xdotool
     mousemove X Y click 1` on the *Plan* menu takes a pointer grab, and the grab survives
     the probe that asked for it — killing such a probe half way through leaves the popup
     open and the office then answers nothing more that touches a document: the next script
@@ -1063,8 +1081,10 @@ the first section, and nothing left behind when a slide leaves one),
 `section_titles_copy_the_first_box_the_command_sees` (fact 94's rule and fact 95's level:
 the box is styled the way the *editor* styles text — on its portion — and every other box
 has to come out of the run saying the same `CharHeight`, `CharColor`, `CharFontName`,
-`CharWeight` and `CharPosture` **on its own portion**, while the four *Default …* settings
-are shown not to overrule it and to speak again once the boxes are removed), and
+`CharWeight` and `CharPosture` **on its own portion**, and sitting in the middle of its
+box like it (`TextVerticalAdjust`, fact 96 - and TOP when there is nothing to copy),
+while the four *Default …* settings are shown not to overrule it and to speak again
+once the boxes are removed), and
 `a_stray_box_cannot_set_the_look_of_the_deck` (the box being deleted by this run is not
 the template either). What the label is
 *drawn as* is checked on the rendered page: `section_titles_do_not_print_through_the_heading`
@@ -1125,7 +1145,7 @@ ring, and the value typed into the hex field at four widths until the ink stops 
 extension, which is how "does nothing" was shown to be an empty box rather than a Job
 that never ran.
 
-The section-name box has three of its own. `dev/debug_section_titles.py` prints what the
+The section-name box has four of its own. `dev/debug_section_titles.py` prints what the
 office really says about the boxes: every slide's section, each box's name (this is where
 a duplicated slide's `PlanImpress:SectionText:Slide: 1` was seen, fact 86), its rectangle
 and its characters at shape, paragraph *and* portion level — the third column is what
@@ -1137,7 +1157,10 @@ the only witness for "the label does not print through the heading" (fact 87).
 the new rows, how many rows of ink it holds and how tall the tallest is, so a label that
 paints nothing, a font dropdown with no names and a caption drawn behind its neighbour are
 each visible; it anchors the crops on the dialog painted `#7FFF00` because the peer reports
-the frame, not the client area (fact 91). What the font list can and cannot be asked of is
+the frame, not the client area (fact 91). `dev/probe_anchor.py` answers the same kind of
+question about the vertical alignment - which of the three spellings exists at all, at
+which level, and what writing one does to the others (fact 96). What the font list can and
+cannot be asked of is
 `dev/probe_fonts.py` (every route to the office's fonts with what each answers) and
 `dev/probe_font_peer.py` (the five steps of `installed_fonts` timed, 4701 descriptors in
 0.1 s with or without a document) — the hang those were chasing is *when* a second

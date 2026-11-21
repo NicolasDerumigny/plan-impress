@@ -1815,6 +1815,16 @@ SECTION_BOX_SERVICE = "com.sun.star.drawing.TextShape"
 SECTION_BOX_ATTRIBUTES = ("CharFontName", "CharFamily", "CharStyleName",
                           "CharHeight", "CharWeight", "CharPosture", "CharColor")
 
+#: The one property that says where the lines sit inside the box.  ``TextAnchor`` (awt)
+#: and ``TextAnchorKind`` (drawing) - what :func:`_make_text_shape` writes on a
+#: *presentation* placeholder (fact 22) - do not exist on a section box at all: asking
+#: either of them raises ``UnknownPropertyException``, on the shape, on the paragraph and
+#: on the portion alike, which is what ``dev/probe_anchor.py`` prints.  So a label has
+#: exactly one vertical alignment, it lives on the **shape** (unlike the characters,
+#: which live on the portion, fact 95), and it is part of what the first box says about
+#: itself: *Format > Align Text* is a thing a user sets by hand.
+SECTION_ANCHOR_ATTRIBUTES = ("TextVerticalAdjust",)
+
 #: Air between the box and whatever is above it, and under the first row of the
 #: content placeholder, in 1/100 mm: two millimetres.
 _SECTION_GAP = 200
@@ -1941,6 +1951,29 @@ def _read_look(shape):
             look[name] = value
             break
     return look
+
+
+def _read_anchor(shape):
+    """The vertical anchoring of ``shape``, from the level of it that has one.
+
+    The same ladder as :func:`_read_look`, and it comes back the same way round: the
+    shape is the only rung that answers ``TextVerticalAdjust`` at all, so this is not a
+    deepest-first rule but a "find the one that answers" one.  Written separately from
+    the characters because it has to go back onto the shape *after* the defaults
+    :func:`_paint_section_box` writes, or the run would pull every label to the top.
+    """
+    anchor = {}
+    for name in SECTION_ANCHOR_ATTRIBUTES:
+        for source in _look_sources(shape):
+            try:
+                value = source.getPropertyValue(name)
+            except Exception:
+                continue
+            if value is None:
+                continue
+            anchor[name] = value
+            break
+    return anchor
 
 
 def _heading_top(shape, point_size):
@@ -2099,15 +2132,31 @@ def _paint_section_box(shape, name, look, rect):
         shape.Position = _point(x, y)
     except Exception:
         pass
-    for attribute, value in (("TextAutoGrowHeight", False),
-                             ("TextAutoGrowWidth", False),
-                             ("TextWordWrap", True),
-                             ("TextAnchor", 0),        # awt TOP, fact 22
-                             ("TextAnchorKind", 1)):   # drawing TOP
+    defaults = (("TextAutoGrowHeight", False),
+                ("TextAutoGrowWidth", False),
+                ("TextWordWrap", True),
+                ("TextAnchor", 0),        # awt TOP, fact 22
+                ("TextAnchorKind", 1),    # drawing TOP
+                # drawing TOP - the one spelling a section box has at all (fact 96);
+                # the two above are refused by a TextShape and stay for a shape that
+                # ever gets created as a placeholder instead
+                ("TextVerticalAdjust", 0))
+    for attribute, value in defaults:
         try:
             shape.setPropertyValue(attribute, value)
         except Exception:
             pass
+    # ... and the anchoring the box was given by hand goes back over it, last of all:
+    # *Format > Align Text* is part of what the first box says about itself, and a run
+    # that pinned every label to the top is the report "vertical alignment is not
+    # conserved" (dev/probe_anchor.py: the copied box said CENTER, its neighbours TOP)
+    for attribute, value in sorted(look.items()):
+        if attribute not in SECTION_ANCHOR_ATTRIBUTES or value is None:
+            continue
+        try:
+            shape.setPropertyValue(attribute, value)
+        except Exception:
+            continue
     return shape
 
 
@@ -2234,6 +2283,7 @@ def apply_section_titles(doc, settings, ctx=None):
             # rectangle is used as it stands; only a box that will not say where it
             # is falls back on where a box is computed to go
             look = _read_look(template_box)
+            look.update(_read_anchor(template_box))
             rect = _box_rect_of(template_box) or _section_box_rect(
                 doc, master, settings, look.get("CharHeight") or _BODY_PT)
         else:

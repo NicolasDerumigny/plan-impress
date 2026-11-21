@@ -2503,6 +2503,19 @@ def _character_of(value):
     return str(getattr(value, "value", value))
 
 
+def _box_look(box):
+    """Everything the copy rule takes from a box: its characters and its anchoring.
+
+    Read as two calls because the two live on different levels of the text object - the
+    characters on the portion (fact 95), ``TextVerticalAdjust`` on the shape
+    (``SECTION_ANCHOR_ATTRIBUTES``) - but compared as one thing, which is how a user
+    judges the result: same font, same size, same place in the box.
+    """
+    look = core._read_look(box)
+    look.update(core._read_anchor(box))
+    return look
+
+
 def _style_box_like_the_editor(box, **attributes):
     """Change a box's characters the way Impress does: on the text **portion**.
 
@@ -2988,10 +3001,11 @@ def section_titles_copy_the_first_box_the_command_sees():
     "copy the position and formatting of the first section title textbox you see when
     inserting / updating section title".  The rule has no switch: restyle the label on
     one section slide in the editor, run the command, and every other slide is redrawn
-    to match it - font, size, colour and the rectangle.  The four *Default …* settings
-    are therefore inert while such a box exists, which is asserted here too, and they
-    come back into play when there is nothing to copy - a deck whose boxes have just
-    been removed.
+    to match it - font, size, weight, colour, the rectangle **and** where the text sits
+    in that rectangle.  The four *Default …* settings are therefore inert while such a
+    box exists, which is asserted here too, and they come back into play when there is
+    nothing to copy - a deck whose boxes have just been removed, which is also the only
+    case in which the label is pinned to the top of its box (fact 22).
     """
     ctx = lo.connect()
     desk = lo.desktop(ctx)
@@ -3009,19 +3023,29 @@ def section_titles_copy_the_first_box_the_command_sees():
             assert core._box_rect_of(page_boxes[0]) == painted, \
                 "slide %d sits at %r, slide 0 at %r" % (
                     index, core._box_rect_of(page_boxes[0]), painted)
-            look = core._read_look(page_boxes[0])
+            look = _box_look(page_boxes[0])
             assert abs(float(look["CharHeight"]) - 14.0) < 0.6, (index, look)
             assert int(look["CharColor"]) & 0xFFFFFF == 0x00FF00, (index, look)
             assert str(look["CharFontName"]) == "Liberation Mono", (index, look)
+            # with nobody having aligned anything, the label is drawn at the top of its
+            # box (fact 22) - the default the copy rule must not lose, but also must not
+            # force over what a user did set
+            assert _character_of(
+                getattr(page_boxes[0], "TextVerticalAdjust")) == "TOP", (index, look)
 
         # what the user does in the editor - and the editor writes the characters on
         # the text portion, not on the shape, so this is the case a copy rule that only
-        # reads the shape loses (see _style_box_like_the_editor)
+        # reads the shape loses (see _style_box_like_the_editor).  The box is made tall
+        # and its text aligned to the middle of it: *Format > Align Text*, which is the
+        # third thing a hand sets on a label and the one the first version of the copy
+        # rule still pulled back to the top
         first = _only_box(doc.DrawPages.getByIndex(0))
         portion = _style_box_like_the_editor(
             first, CharHeight=28, CharColor=0xFF0000, CharFontName="Liberation Serif",
             CharWeight=150, CharPosture=2)
         first.Position = core._point(900, 1200)
+        first.Size = core._size(25199, 4000)
+        first.TextVerticalAdjust = 1                  # drawing CENTER
         # one slide that was styled *differently*: its own portion says something else,
         # and the run has to overwrite that, not merely the shape above it - the case a
         # duplicated or once-hand-styled slide is
@@ -3031,7 +3055,7 @@ def section_titles_copy_the_first_box_the_command_sees():
                                    CharFontName="DejaVu Sans Mono", CharWeight=100,
                                    CharPosture=0)
         wanted = core._box_rect_of(first)
-        look = core._read_look(first)
+        look = _box_look(first)
         # the witness that this really is the hard case: what was written is on the
         # portion, and reading the shape or the paragraph would answer something else
         for attribute in ("CharHeight", "CharColor", "CharFontName", "CharWeight",
@@ -3040,6 +3064,7 @@ def section_titles_copy_the_first_box_the_command_sees():
                 getattr(portion, attribute)), \
                 "reading the styled box answers %s=%r, its own portion says %r" % (
                     attribute, look.get(attribute), getattr(portion, attribute))
+        assert _character_of(look.get("TextVerticalAdjust")) == "CENTER", look
 
         report = core.apply_section_titles(doc, defaults, ctx)
         assert report["look"] == "the first section slide's own box", report
@@ -3050,16 +3075,20 @@ def section_titles_copy_the_first_box_the_command_sees():
             assert core._box_rect_of(box) == wanted, \
                 "slide %d sits at %r, not at the first box's %r" % (
                     index, core._box_rect_of(box), wanted)
-            other = core._read_look(box)
-            target = core._portions_of(core._paragraphs_of(box)[0])[0]
-            for attribute in ("CharHeight", "CharColor", "CharFontName",
-                              "CharWeight", "CharPosture"):
+            other = _box_look(box)
+            for attribute in ("CharHeight", "CharColor", "CharFontName", "CharWeight",
+                              "CharPosture", "TextVerticalAdjust"):
                 assert _character_of(other.get(attribute)) == _character_of(
                     look.get(attribute)), \
                     "slide %d: %s is %r, the first box says %r" % (
                         index, attribute, other.get(attribute), look.get(attribute))
-                # and on the level that actually paints: a copy that stopped at the
-                # shape would leave this slide's own portion saying what it used to
+            # and on the level that actually paints: a copy that stopped at the
+            # shape would leave this slide's own portion saying what it used to
+            target = core._portions_of(core._paragraphs_of(box)[0])[0]
+            for attribute in core.SECTION_BOX_ATTRIBUTES:
+                if not hasattr(target, attribute):
+                    continue        # a portion has no CharStyleName; the value in the
+                                    # look came from a higher rung (fact 52)
                 assert _character_of(getattr(target, attribute)) == _character_of(
                     look.get(attribute)), \
                     "slide %d paints %s=%r, the first box paints %r" % (
@@ -3085,6 +3114,8 @@ def section_titles_copy_the_first_box_the_command_sees():
             assert abs(float(look["CharHeight"]) - 14.0) < 0.6, (index, look)
             assert int(look["CharColor"]) & 0xFFFFFF == 0x00FF00, (index, look)
             assert str(look["CharFontName"]) == "Liberation Mono", (index, look)
+            assert _character_of(getattr(page_boxes[0], "TextVerticalAdjust")) == "TOP",\
+                (index, look)
     finally:
         lo.close(doc)
 

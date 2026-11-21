@@ -92,12 +92,15 @@ def describe(doc):
             look = core._read_look(shape)
             paragraph = core._first_paragraph(shape)
             portions = core._portions_of(paragraph) if paragraph else []
-            print("       box %-38s %r at %s fill=%s line=%s"
+            print("       box %-38s %r at %s fill=%s line=%s anchor=%s"
                   % (str(shape.Name), str(shape.getString()),
                      (int(shape.Position.X), int(shape.Position.Y),
                       int(shape.Size.Width), int(shape.Size.Height)),
                      _style_of(shape, "FillStyle"),
-                     _style_of(shape, "LineStyle")))
+                     _style_of(shape, "LineStyle"),
+                     # the third thing a hand sets on a label, and it lives on the shape
+                     # alone: dev/probe_anchor.py is what found that
+                     _ask(shape, "TextVerticalAdjust")))
             print("       shape | paragraph | portion ->  %s" % "  |  ".join(
                 (_level_of(shape), _level_of(paragraph),
                  _level_of(portions[0] if portions else None))))
@@ -140,6 +143,8 @@ def _restyle_like_the_editor(box):
     portion.CharWeight = 150          # awt FontWeight.BOLD
     portion.CharPosture = 2           # awt FontSlant.OBLIQUE
     box.Position = core._point(900, 1200)
+    box.Size = core._size(25199, 4000)
+    box.TextVerticalAdjust = 1        # drawing CENTER: *Format > Align Text*
     return portion
 
 
@@ -169,7 +174,7 @@ def main():
                 break
         if _restyle_like_the_editor(first) is not None:
             print("\nfirst box restyled in the editor (28 pt bold oblique serif,"
-                  " red, moved to 9,12 mm)")
+                  " red, moved to 9,12 mm, text centred in a 40 mm box)")
             describe(doc)
             print("apply 3 (every box must become that):",
                   core.apply_section_titles(doc, settings, ctx))
