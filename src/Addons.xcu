@@ -49,7 +49,20 @@
                                 <value>com.sun.star.presentation.PresentationDocument</value>
                             </prop>
                             <node oor:name="Submenu">
-                                <node oor:name="mm1" oor:op="replace">
+                                <!-- The rows of the popup, and the names are the
+                                     ORDER: the configuration does not hand these
+                                     children back in the order they are written here,
+                                     it answers them with the node names compared
+                                     NUMERICALLY.  With mm1..mm4, mm41, mm42, mm5, mm6
+                                     in the file they came back as mm1, mm2, mm3, mm4,
+                                     mm5, mm6, mm41, mm42, so the two section commands
+                                     landed after *Toggle Debug Log* and its separator
+                                     sat in the middle of the menu - "put the toggle
+                                     debug log last with a separator in the menu".
+                                     Keep the sequence fixed width: then the numeric
+                                     order and the written order are the same
+                                     (fact 98, dev/probe_menu_order.py). -->
+                                <node oor:name="mm01" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Insert Plan Slides</value>
                                         <value xml:lang="fr">Insérer les diapositives de plan</value>
@@ -64,12 +77,12 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm2" oor:op="replace">
+                                <node oor:name="mm02" oor:op="replace">
                                     <prop oor:name="URL" oor:type="xs:string">
                                         <value>private:separator</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm3" oor:op="replace">
+                                <node oor:name="mm03" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Settings…</value>
                                         <value xml:lang="fr">Paramètres…</value>
@@ -84,7 +97,7 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm4" oor:op="replace">
+                                <node oor:name="mm04" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Remove Plan Slides</value>
                                         <value xml:lang="fr">Supprimer les diapositives de plan</value>
@@ -99,7 +112,7 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm41" oor:op="replace">
+                                <node oor:name="mm05" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Insert Section Titles</value>
                                         <value xml:lang="fr">Insérer des titres de section</value>
@@ -114,7 +127,7 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm42" oor:op="replace">
+                                <node oor:name="mm06" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Remove Section Titles</value>
                                         <value xml:lang="fr">Supprimer les titres de section</value>
@@ -129,12 +142,12 @@
                                         <value>com.sun.star.presentation.PresentationDocument</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm5" oor:op="replace">
+                                <node oor:name="mm07" oor:op="replace">
                                     <prop oor:name="URL" oor:type="xs:string">
                                         <value>private:separator</value>
                                     </prop>
                                 </node>
-                                <node oor:name="mm6" oor:op="replace">
+                                <node oor:name="mm08" oor:op="replace">
                                     <prop oor:name="Title" oor:type="xs:string">
                                         <value xml:lang="en-US">Toggle Debug Log</value>
                                         <value xml:lang="fr">Activer/désactiver le journal</value>

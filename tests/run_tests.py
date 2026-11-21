@@ -35,6 +35,12 @@ SECTION_NAMES = ["Introduction", "Architecture", "Demo"]
 SERVICE = "service:org.devsys.planimpress.InsertPlan?insert"
 #: The URL *Section Titles* is bound to, for the dispatch test below.
 SECTION_SERVICE = "service:org.devsys.planimpress.SectionTitles?section_titles"
+#: The URL *Toggle Debug Log* is bound to: the last row of the menu (fact 98).
+DEBUG_URL = "service:org.devsys.planimpress.Debug?debug"
+#: Where the merged ``Addons.xcu`` keeps the rows of the *Plan* submenu.  The node
+#: names the configuration answers with *are* the menu's rows, in its own order.
+SUBMENU_PATH = ("/org.openoffice.Office.Addons/AddonUI/OfficeMenuBarMerging/"
+                "org.devsys.planimpress/S1/MenuItems/M1/Submenu")
 #: what ``tests/make_fixture.py`` writes into the footer of every slide
 FOOTER_TEXT = "Quarterly Review 2026"
 
@@ -3666,6 +3672,94 @@ def addons_registered():
                      "icons/section_16.png", "icons/section_remove_26.png",
                      "private:separator", "Plan", "icons/plan_16.png"):
         assert expected in joined, "missing from Addons.xcu: %s" % expected
+
+
+def _menu_rows():
+    """``Addons.xcu``'s own rows of the *Plan* submenu, in the order they are written.
+
+    ``[(name, url, title), ...]``, a separator included as ``url ==
+    "private:separator"``.  Only the children of the one ``Submenu`` node count: the
+    ``Images`` nodes carry the very same ``URL`` property, and taking those called this
+    deck eleven items.
+    """
+    import xml.etree.ElementTree as ET
+    oor = "{http://openoffice.org/2001/registry}"
+    tree = ET.parse(os.path.join(ROOT, "src", "Addons.xcu"))
+    rows = []
+    for submenu in tree.iter("node"):
+        if submenu.get(oor + "name") != "Submenu":
+            continue
+        for node in submenu:
+            props = {}
+            for prop in node.findall("prop"):
+                value = prop.find("value")
+                props[prop.get(oor + "name")] = (
+                    str(value.text) if value is not None else "")
+            rows.append((node.get(oor + "name"), props.get("URL", ""),
+                         props.get("Title", "")))
+    return rows
+
+
+@test
+def toggle_debug_log_is_the_last_row_with_a_separator_in_front():
+    """The last two rows of the menu are the two rows the file puts there.
+
+    "Put the *toggle debug log* last with a separator in the menu".  The office builds
+    the popup out of the node names the configuration answers with, and it answers them
+    **sorted numerically**, not in the order they were written (fact 98): while the
+    section commands were named ``mm41``/``mm42`` between ``mm4`` and ``mm5`` they came
+    back after ``mm6``, so *Toggle Debug Log* sat in the middle of the menu with its
+    separator in front of it and the two section items behind it.  The numbering is
+    therefore part of the menu's look and is pinned here in both spellings of the
+    comparison, together with the tail the report asked for.
+    """
+    rows = _menu_rows()
+    assert rows, "Addons.xcu has no Submenu"
+    names = [name for name, _url, _title in rows]
+    assert all(re.match(r"^mm\d+$", name) for name in names), names
+    assert len(set(len(name) for name in names)) == 1, \
+        "the rows are not one fixed-width sequence, so the two orders can disagree: %s" \
+        % names
+    assert sorted(names) == names, "the file lists them out of order: %s" % names
+    numbers = [int(re.sub(r"\D", "", name) or 0) for name in names]
+    assert numbers == sorted(numbers), \
+        "the office sorts the rows as %s, which is not the written order" % numbers
+    items = [row for row in rows if row[1].startswith("service:")]
+    assert len(items) == 6, [row[2] for row in items]
+    last, before = rows[-1], rows[-2]
+    assert last[1] == DEBUG_URL, "the last row is %r (%s)" % (last[2], last[1])
+    assert before[1] == "private:separator", \
+        "the row in front of %r is %r, not a separator" % (last[2], before[1])
+
+
+@test
+def the_menu_rows_come_back_in_the_order_the_file_lists_them():
+    """What the merged configuration really hands back for the submenu, row by row.
+
+    ``addons_registered`` proves the file was accepted at all; this proves the
+    configuration still answers the rows in the written order - the order the popup is
+    built from (fact 98) - and that the last row is *Toggle Debug Log* with a separator
+    directly in front of it.  ``dev/probe_menu_order.py`` is the screenshot side of the
+    same claim: a separator draws no line in this theme, so the rows are counted and
+    the air between them measured against what the file asks for.
+    """
+    ctx = lo.connect()
+    if not _extension_installed(ctx):
+        raise Skip("extension not installed (make install)")
+    provider = ctx.ServiceManager.createInstanceWithContext(
+        "com.sun.star.configuration.ConfigurationProvider", ctx)
+    view = provider.createInstanceWithArguments(
+        "com.sun.star.configuration.ConfigurationAccess",
+        (lo.pv("nodepath", SUBMENU_PATH),))
+    names = list(view.getElementNames())
+    written = [name for name, _url, _title in _menu_rows()]
+    assert names == written, \
+        "the office hands the rows back as %s, the file lists %s" % (names, written)
+    urls = [str(getattr(view.getByName(name), "URL", "") or "") for name in names]
+    assert urls.count("private:separator") == 2, urls
+    assert urls[-1] == DEBUG_URL, urls
+    assert urls[-2] == "private:separator", \
+        "the row in front of the last one is %r, not a separator" % urls[-2]
 
 
 @test

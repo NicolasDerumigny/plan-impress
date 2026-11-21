@@ -9,8 +9,10 @@ that turned out to be wrong or incomplete.
 A LibreOffice Impress extension (`org.devsys.planimpress`) that inserts agenda
 slides: one overview slide before the first section, plus one identical plan
 slide at the top of each section where only the current section is drawn in the
-text colour. A `Plan` menu provides *Insert Plan Slides*, *Remove Plan Slides*,
-*Insert Section Titles*, *Remove Section Titles*, *Settings…* and *Toggle Debug Log*.
+text colour. A `Plan` menu provides, in that order, *Insert Plan Slides*, —,
+*Settings…*, *Remove Plan Slides*, *Insert Section Titles*, *Remove Section
+Titles*, — and *Toggle Debug Log*, where each — is a separator (the order is the
+node naming: fact 98).
 
 ## Layout
 
@@ -119,6 +121,36 @@ reproducible with a script in `dev/`.
    with `%origin%/icons/…` paths (`%origin%` = the extension's own folder).
 9. The configuration is only re-read at startup; after changing `Addons.xcu`
    you must restart the office (`make install` does it).
+98. **The rows of a submenu come back in the order the *node names* sort in, not the
+   order they are written.** The items under `Submenu` are the menu's rows, and the
+   office builds the popup out of the container's own element list: reading the merged
+   configuration back (`ConfigurationAccess` on `/org.openoffice.Office.Addons/AddonUI/
+   OfficeMenuBarMerging/org.devsys.planimpress/S1/MenuItems/M1/Submenu`) answered
+   `mm1, mm2, mm3, mm4, mm5, mm6, mm41, mm42` for a file that listed `mm41`/`mm42`
+   between `mm4` and `mm5` — the names are compared **numerically**. That is the report
+   "*Toggle Debug Log* is not last": the two section commands jumped past `mm6`, so the
+   debug item sat in the middle with its separator in front of it and the section items
+   behind it. Number the rows as one fixed-width sequence (`mm01`…`mm08`) so the numeric
+   order and the written order cannot disagree, and check it against the configuration
+   rather than against the file —
+   `tests/run_tests.py::the_menu_rows_come_back_in_the_order_the_file_lists_them` reads
+   the element list back and `toggle_debug_log_is_the_last_row_with_a_separator_in_front`
+   pins the same thing in the file, including that tail.
+99. **A separator draws no line at all in this theme; what it leaves behind is air.** The
+   gap between two rows of the popup is the popup's own `#383C4A` from edge to edge
+   (`dev/probe_menu_order.py` dumps every row that is not background, and the separator
+   rows have nothing in them), so on screen the only sign one is there is about 5 px of
+   extra pitch between the rows of letters — 29 px between neighbours, 34 px across a
+   separator. The popup has to be found before any of that can be measured, and *not* by
+   diffing a screenshot against the closed desktop: over the toolbar the popup's own
+   background is the colour that was already there, which broke a run of items in the
+   middle and merged two rows into one 95 px band. It is the *window* that appears
+   between the two shots — `xdotool search --maxdepth 1 --onlyvisible` lists it as a
+   top-level of its own (215x184 at 402,57 for six items) — and inside it the background
+   is uniform, which is what makes a row measurable. Asking the office instead is a
+   dead end: `XWindow::getAccessibleContext()` is not on the frame's container window
+   any more than `getPeer` is (fact 90), so the popup cannot be read from the API at
+   all and has to be photographed.
 
 ### Calling into Python
 
@@ -965,9 +997,10 @@ below are why the code is shaped as it is.
     hangs in `loadComponentFromURL()` without printing a line while `pgrep`, `xdpyinfo`,
     the UNO port and `Toolkit.getFontDescriptors()` all still look healthy. It is fact 48's
     modal dialog in X clothing and fact 60's dead office without a dead process, so the
-    two probes that click the menu (`dev/measure_text.py`, `dev/probe_font_menu.py`) end
-    with `key Escape`, `key Escape` and a click on the canvas; when a hang is already
-    there, restart the **office** — restarting the script changes nothing.
+    three probes that click the menu (`dev/measure_text.py`, `dev/probe_font_menu.py`,
+    `dev/probe_menu_order.py`) end with `key Escape`, `key Escape` and a click on the
+    canvas; when a hang is already there, restart the **office** — restarting the
+    script changes nothing.
 
 ## Testing notes
 
@@ -1096,7 +1129,12 @@ saying *Default* so a value the copied box overrules is not read as a broken opt
 `the_position_fields_speak_centimetres_and_the_file_does_not`
 (fact 93, both directions and the rubbish cases), plus `the_section_commands_are_on_the_menu`
 (pinned per URL: *Insert Section Titles* belongs to the inserting URL)
-and `menu_dispatch_writes_section_titles` for the two Jobs a click reaches.
+and `menu_dispatch_writes_section_titles` for the two Jobs a click reaches. The
+menu's *rows* are pinned too, both ways round: `the_menu_rows_come_back_in_the_order_the_file_lists_them`
+asks the merged configuration for the element list the popup is built from (fact 98) and
+`toggle_debug_log_is_the_last_row_with_a_separator_in_front` pins the same order in the
+file, that the numbering is one fixed-width sequence, and that the last row is *Toggle
+Debug Log* with a separator directly in front of it.
 
 ### Looking at the result
 
@@ -1143,7 +1181,12 @@ between the *glyphs*, each colour square's control box, its block of colour and 
 ring, and the value typed into the hex field at four widths until the ink stops growing
 (facts 84 and 85). `dev/probe_debug_toggle.py` drives the menu item itself through the installed
 extension, which is how "does nothing" was shown to be an empty box rather than a Job
-that never ran.
+that never ran. `dev/probe_menu_order.py` is the same trick for the *Plan* menu: it finds
+the popup as the window that appears when the menu is clicked, counts its rows of letters,
+measures the pitch between them and compares the extra air with the separator positions
+`Addons.xcu` asks for — the only witness for "the last row is *Toggle Debug Log* and a
+separator is in front of it", because a separator paints no line here (fact 99) and the
+menu's order is not the file's order (fact 98).
 
 The section-name box has four of its own. `dev/debug_section_titles.py` prints what the
 office really says about the boxes: every slide's section, each box's name (this is where
